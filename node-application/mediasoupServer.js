@@ -274,7 +274,7 @@ async function startMediasoup(io) {
       }
     });
   });
-
+}
 
 function findRoomId(socket) {
   for (let [roomId, room] of rooms.entries()) {
