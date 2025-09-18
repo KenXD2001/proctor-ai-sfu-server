@@ -27,9 +27,17 @@ function findRoomId(socket) {
   return null;
 }
 
+// 🔥 Config for RTP recording
+const plainRtpTransportConfig = {
+  listenIp: { ip: "127.0.0.1", announcedIp: "127.0.0.1" },
+  rtcpMux: false,
+  comedia: false,
+};
+
 module.exports = {
   createWorker,
   createRouter,
   getRooms,
   findRoomId,
+  plainRtpTransportConfig,
 };

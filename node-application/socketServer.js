@@ -1,5 +1,12 @@
 const jwt = require("jsonwebtoken");
-const { createRouter, getRooms, findRoomId } = require("./mediasoupServer");
+const {
+  createRouter,
+  getRooms,
+  findRoomId,
+  plainRtpTransportConfig,
+} = require("./mediasoupServer");
+const GStreamer = require("./gstreamer");
+const { getPort, releasePort } = require("./port");
 
 const mediaCodecs = [
   {
@@ -54,6 +61,8 @@ function startSocketServer(io) {
         transports: [],
         producers: [],
         consumers: [],
+        gstreamer: null,
+        remotePorts: [],
       });
       socket.join(roomId);
 
@@ -106,10 +115,65 @@ function startSocketServer(io) {
       });
     });
 
+    socket.on("start-record", async (callback) => {
+      const roomId = findRoomId(socket);
+      const room = rooms.get(roomId);
+      const peer = room.peers.get(socket.id);
+
+      if (!peer) return;
+
+      const videoProducer = peer.producers.find(
+        (p) => p.kind === "video" && p.appData?.type === "screen"
+      );
+      if (!videoProducer) {
+        console.log(`[Record] ⚠️ No screen producer found for User=${peer.socket.userId}`);
+        return callback({ error: "No screen producer" });
+      }
+
+      const videoInfo = await publishProducerRtpStream(room, peer, videoProducer);
+
+      const audioProducer = peer.producers.find((p) => p.kind === "audio");
+      let audioInfo = null;
+      if (audioProducer) {
+        audioInfo = await publishProducerRtpStream(room, peer, audioProducer);
+      }
+
+      peer.gstreamer = new GStreamer({
+        roomId,
+        userId: peer.socket.userId,
+        video: videoInfo,
+        audio: audioInfo,
+      });
+
+      setTimeout(async () => {
+        for (const consumer of peer.consumers) {
+          await consumer.resume();
+          await consumer.requestKeyFrame();
+        }
+      }, 1000);
+
+      callback({ status: "recording", roomId, userId: peer.socket.userId });
+    });
+
+    socket.on("stop-record", () => {
+      const roomId = findRoomId(socket);
+      const room = rooms.get(roomId);
+      const peer = room.peers.get(socket.id);
+
+      if (peer?.gstreamer) {
+        peer.gstreamer.kill();
+        peer.gstreamer = null;
+
+        peer.remotePorts.forEach((p) => releasePort(p));
+        peer.remotePorts = [];
+      }
+    });
+
     socket.on(
       "connect-transport",
       async ({ transportId, dtlsParameters }, callback) => {
         const room = [...rooms.values()].find((r) => r.peers.has(socket.id));
+        if (!room) return;
         const peer = room.peers.get(socket.id);
 
         const transport = peer.transports.find((t) => t.id === transportId);
@@ -142,25 +206,26 @@ function startSocketServer(io) {
       "produce",
       async ({ transportId, kind, rtpParameters, appData }, callback) => {
         const room = [...rooms.values()].find((r) => r.peers.has(socket.id));
+        if (!room) return;
         const peer = room.peers.get(socket.id);
         const transport = peer.transports.find((t) => t.id === transportId);
         if (!transport) return;
-
+    
         const producer = await transport.produce({
           kind,
           rtpParameters,
           appData,
         });
-
+    
         const type = appData?.type || "media";
         producer.appData = { userId: socket.userId, ...appData };
-
+    
         peer.producers.push(producer);
-
+    
         callback({ id: producer.id });
         logProducers(peer);
-
-        // 🔥 Extra logging for stream metadata
+    
+        // Logging meta
         let metaParts = [
           `User=${shortId(socket.userId)}`,
           `Kind=${kind}`,
@@ -170,9 +235,40 @@ function startSocketServer(io) {
           metaParts.push(`Resolution=${appData.resolution}`);
         if (appData.fps) metaParts.push(`FPS=${appData.fps}`);
         if (appData.source) metaParts.push(`Source=${appData.source}`);
-
+    
         console.log(`[Stream-Meta] 📡 ${metaParts.join(" ")}`);
-
+    
+        // 🔥 AUTO RECORD when screen is produced
+        if (kind === "video" && type === "screen") {
+          console.log(`[Record] 🎬 Auto-start for screen share User=${socket.userId}`);
+    
+          // Publish video
+          const videoInfo = await publishProducerRtpStream(room, peer, producer);
+    
+          // Try also to attach audio if available
+          const audioProducer = peer.producers.find((p) => p.kind === "audio");
+          let audioInfo = null;
+          if (audioProducer) {
+            audioInfo = await publishProducerRtpStream(room, peer, audioProducer);
+          }
+    
+          peer.gstreamer = new GStreamer({
+            roomId: room.router.id || roomId,
+            userId: peer.socket.userId,
+            video: videoInfo,
+            audio: audioInfo,
+          });
+    
+          // Resume consumers
+          setTimeout(async () => {
+            for (const consumer of peer.consumers) {
+              await consumer.resume();
+              await consumer.requestKeyFrame();
+            }
+          }, 1000);
+        }
+    
+        // Notify others
         room.peers.forEach((p, id) => {
           if (
             (peer.role === "student" && p.role === "invigilator") ||
@@ -187,7 +283,7 @@ function startSocketServer(io) {
             }
           }
         });
-
+    
         producer.on("close", () => {
           peer.producers = peer.producers.filter(
             (prod) => prod.id !== producer.id
@@ -196,12 +292,21 @@ function startSocketServer(io) {
             `[Produce-End] ⏹️ User=${shortId(socket.userId)} Role=${peer.role}`
           );
           logProducers(peer);
+    
+          // 🔥 Stop auto recording when screen producer closes
+          if (peer.gstreamer) {
+            peer.gstreamer.kill();
+            peer.gstreamer = null;
+            peer.remotePorts.forEach((p) => releasePort(p));
+            peer.remotePorts = [];
+          }
         });
       }
     );
 
     socket.on("consume", async ({ producerId, rtpCapabilities }, callback) => {
       const room = [...rooms.values()].find((r) => r.peers.has(socket.id));
+      if (!room) return;
       const peer = room.peers.get(socket.id);
 
       if (!room.router.canConsume({ producerId, rtpCapabilities })) {
@@ -239,6 +344,7 @@ function startSocketServer(io) {
 
     socket.on("get-producers", () => {
       const room = [...rooms.values()].find((r) => r.peers.has(socket.id));
+      if (!room) return;
       const peer = room.peers.get(socket.id);
       const allProducerIds = [];
 
@@ -267,6 +373,11 @@ function startSocketServer(io) {
       if (!room) return;
       const peer = room.peers.get(socket.id);
       peer.transports.forEach((t) => t.close());
+
+      if (peer.gstreamer) {
+        peer.gstreamer.kill();
+      }
+
       room.peers.delete(socket.id);
 
       console.log(
@@ -281,6 +392,53 @@ function startSocketServer(io) {
       }
     });
   });
+}
+
+async function publishProducerRtpStream(room, peer, producer) {
+  const rtpTransport = await room.router.createPlainTransport({
+    listenIp: { ip: "127.0.0.1", announcedIp: "127.0.0.1" },
+    rtcpMux: false,
+    comedia: false,
+  });
+
+  const remoteRtpPort = getPort();
+  peer.remotePorts.push(remoteRtpPort);
+
+  let remoteRtcpPort;
+  if (!plainRtpTransportConfig.rtcpMux) {
+    remoteRtcpPort = getPort();
+    peer.remotePorts.push(remoteRtcpPort);
+  }
+
+  await rtpTransport.connect({
+    ip: "127.0.0.1",
+    port: remoteRtpPort,
+    rtcpPort: remoteRtcpPort,
+  });
+
+  peer.transports.push(rtpTransport);
+
+  const codecs = [];
+  const routerCodec = room.router.rtpCapabilities.codecs.find(
+    (c) => c.kind === producer.kind
+  );
+  codecs.push(routerCodec);
+
+  const rtpCapabilities = { codecs, rtcpFeedback: [] };
+
+  const rtpConsumer = await rtpTransport.consume({
+    producerId: producer.id,
+    rtpCapabilities,
+    paused: true,
+  });
+
+  peer.consumers.push(rtpConsumer);
+
+  return {
+    remoteRtpPort,
+    remoteRtcpPort,
+    rtpParameters: rtpConsumer.rtpParameters,
+  };
 }
 
 module.exports = { startSocketServer };
