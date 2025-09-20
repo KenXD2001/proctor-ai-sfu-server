@@ -86,7 +86,7 @@ function startSocketServer(io) {
       const peer = room.peers.get(socket.id);
 
       const transport = await room.router.createWebRtcTransport({
-        listenIps: [{ ip: "0.0.0.0", announcedIp: "192.168.137.171" }],
+        listenIps: [{ ip: "0.0.0.0", announcedIp: "192.168.137.127" }],
         enableUdp: true,
         enableTcp: true,
         preferUdp: true,
@@ -209,14 +209,50 @@ function startSocketServer(io) {
           }
         });
 
-        // Record each producer - we'll handle multiple streams in the recorder
-        const filename = `recordings/${socket.userId}_${producer.kind}_${Date.now()}.mp4`;
-        await createConsumerAndRecord(producer, room.router, filename);
+        // Only record screen share video streams
+        const shouldRecord = producer.kind === 'video' && 
+                           (appData.source === 'screen' || appData.type === 'screen' || appData.source === 'screen-share');
+        
+        if (shouldRecord) {
+          const filename = `recordings/${socket.userId}_screen_${Date.now()}.mp4`;
+          const recordingSession = await createConsumerAndRecord(producer, room.router, filename);
+          
+          // Track recording session for cleanup
+          if (!peer.recordingSessions) {
+            peer.recordingSessions = new Map();
+          }
+          peer.recordingSessions.set(producer.id, recordingSession);
+          
+          console.log(`[Recording] Started screen recording for user: ${shortId(socket.userId)}`);
+        } else {
+          console.log(`[Recording] Skipping recording for ${producer.kind} stream (source: ${appData.source || 'unknown'})`);
+        }
 
         producer.on("close", () => {
           peer.producers = peer.producers.filter(
             (prod) => prod.id !== producer.id
           );
+          
+          // Stop recording if this producer was being recorded
+          if (peer.recordingSessions && peer.recordingSessions.has(producer.id)) {
+            const recordingSession = peer.recordingSessions.get(producer.id);
+            if (recordingSession) {
+              // Stop FFmpeg process
+              if (recordingSession.ffmpeg && !recordingSession.ffmpeg.killed) {
+                recordingSession.ffmpeg.kill('SIGTERM');
+                console.log(`[Recording] Stopped recording for producer: ${producer.id}`);
+              }
+              // Close consumer and transport
+              if (recordingSession.consumer) {
+                recordingSession.consumer.close();
+              }
+              if (recordingSession.transport) {
+                recordingSession.transport.close();
+              }
+              peer.recordingSessions.delete(producer.id);
+            }
+          }
+          
           console.log(`[Produce-End] User=${shortId(socket.userId)} Role=${peer.role}`);
           logProducers(peer);
         });
@@ -309,6 +345,26 @@ function startSocketServer(io) {
       const room = rooms.get(roomId);
       if (!room) return;
       const peer = room.peers.get(socket.id);
+      
+      // Stop all recordings for this peer
+      if (peer.recordingSessions) {
+        peer.recordingSessions.forEach((recordingSession, producerId) => {
+          // Stop FFmpeg process
+          if (recordingSession.ffmpeg && !recordingSession.ffmpeg.killed) {
+            recordingSession.ffmpeg.kill('SIGTERM');
+            console.log(`[Recording] Stopped recording for disconnected user: ${shortId(socket.userId)}`);
+          }
+          // Close consumer and transport
+          if (recordingSession.consumer) {
+            recordingSession.consumer.close();
+          }
+          if (recordingSession.transport) {
+            recordingSession.transport.close();
+          }
+        });
+        peer.recordingSessions.clear();
+      }
+      
       peer.transports.forEach((t) => t.close());
       room.peers.delete(socket.id);
 

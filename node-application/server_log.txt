@@ -1,0 +1,37 @@
+SFU server running on port 3000
+[Connect] 🔌 Socket=oRcwlAkw User=f5fd377f
+[Worker] Created
+[Room] Created: 8955643f-9274-4d4c-b017-b4eef7227c07
+[Join] User=f5fd377f Role=invigilator Room=8955643f-9274-4d4c-b017-b4eef7227c07
+[Produce] User=f5fd377f Role=invigilator Total=1 [video:video/VP8]
+[Stream] User=f5fd377f Kind=video Type=screen Resolution=1920x1080 FPS=15 Source=screen-share
+[Screen Recorder] Starting screen recording: video -> recordings/f5fd377f-6197-48bc-a281-957e196b86be_screen_1758372253997.mp4
+[Recorder] Consumer created: 70ea2624-ffe1-407c-99d3-a392cdf3a89d
+[FFmpeg] Starting recording: recordings/f5fd377f-6197-48bc-a281-957e196b86be_screen_1758372253997.mp4
+[Produce] User=f5fd377f Role=invigilator Total=2 [video:video/VP8, audio:audio/opus]
+[Stream] User=f5fd377f Kind=audio Type=media Source=microphone
+[Recording] Skipping recording for audio stream (source: microphone)
+[Produce] User=f5fd377f Role=invigilator Total=3 [video:video/VP8, audio:audio/opus, video:video/VP8]
+[Stream] User=f5fd377f Kind=video Type=media Resolution=640x480 FPS=15 Source=camera
+[Recording] Skipping recording for video stream (source: camera)
+[Connect] 🔌 Socket=DdZm8mpM User=f5fd377f
+[Room] Created: 99f6ea56-d3dd-4e8e-a2cc-3b4f6264fc1b
+[Join] User=f5fd377f Role=invigilator Room=99f6ea56-d3dd-4e8e-a2cc-3b4f6264fc1b
+[Screen Recorder] Screen recording started: video -> recordings/f5fd377f-6197-48bc-a281-957e196b86be_screen_1758372253997.mp4
+[Recording] Started screen recording for user: f5fd377f
+[Connect] 🔌 Socket=V7aB9P-j User=47ef4711
+[Join] User=47ef4711 Role=admin Room=8955643f-9274-4d4c-b017-b4eef7227c07
+[Consume] User=47ef4711 Role=admin Total=1
+[Consume] User=47ef4711 Role=admin Total=2
+[Consume] User=47ef4711 Role=admin Total=3
+[Recording] Stopped recording for disconnected user: f5fd377f
+[Consumer] Consumer closed: 70ea2624-ffe1-407c-99d3-a392cdf3a89d
+[Recorder] Recording ended: recordings/f5fd377f-6197-48bc-a281-957e196b86be_screen_1758372253997.mp4
+[Recorder] Transport closed: ee2d3a33-4c76-444c-adc3-05ccc1c2d098
+[Producer] Transport closed: 12051e71-1a43-4c21-a638-30e33cda7076
+[Producer] Transport closed: fa922628-d242-4a95-9a25-9272d49ed21d
+[Producer] Transport closed: 4f71d290-c3e0-42b6-9d96-6c0f46ae9bf1
+[Leave] User=f5fd377f Role=invigilator Room=8955643f-9274-4d4c-b017-b4eef7227c07
+[FFmpeg] Recording stopped - no data received
+[Leave] User=f5fd377f Role=invigilator Room=99f6ea56-d3dd-4e8e-a2cc-3b4f6264fc1b
+[Room] Deleted: 99f6ea56-d3dd-4e8e-a2cc-3b4f6264fc1b

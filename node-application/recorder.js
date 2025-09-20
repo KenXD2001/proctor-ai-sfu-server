@@ -30,46 +30,26 @@ async function startFfmpegRecording({ rtpParameters, output, kind, consumerRtpPa
     fs.mkdirSync(recordingsDir, { recursive: true });
   }
 
-  // Get the actual payload type from consumer RTP parameters
-  const payloadType = consumerRtpParams?.codecs?.[0]?.payloadType || (kind === 'video' ? 96 : 111);
-
-  // Use FFmpeg to receive RTP stream from PlainTransport
-  let args;
-  
-  if (kind === 'video') {
-    args = [
-      "-protocol_whitelist", "file,udp,rtp",
-      "-f", "rtp",
-      "-payload_type", payloadType.toString(),
-      "-i", `rtp://127.0.0.1:${rtpParameters.port}`,
-      "-c:v", "libx264",
-      "-preset", "ultrafast", // Fast encoding for real-time
-      "-tune", "zerolatency", // Low latency
-      "-y",
-      output,
-    ];
-  } else if (kind === 'audio') {
-    args = [
-      "-protocol_whitelist", "file,udp,rtp", 
-      "-f", "rtp",
-      "-payload_type", payloadType.toString(),
-      "-i", `rtp://127.0.0.1:${rtpParameters.port}`,
-      "-c:a", "aac",
-      "-y",
-      output,
-    ];
-  } else {
-    // Fallback for unknown types
-    args = [
-      "-protocol_whitelist", "file,udp,rtp",
-      "-f", "rtp", 
-      "-payload_type", payloadType.toString(),
-      "-i", `rtp://127.0.0.1:${rtpParameters.port}`,
-      "-c", "copy",
-      "-y",
-      output,
-    ];
+  // Since we only record screen share video streams, validate the kind
+  if (kind !== 'video') {
+    throw new Error(`Expected video stream for screen recording, got: ${kind}`);
   }
+
+  // Get the actual payload type from consumer RTP parameters
+  const payloadType = consumerRtpParams?.codecs?.[0]?.payloadType || 96;
+
+  // Use FFmpeg to receive RTP stream from PlainTransport for video only
+  const args = [
+    "-protocol_whitelist", "file,udp,rtp",
+    "-f", "rtp",
+    "-payload_type", payloadType.toString(),
+    "-i", `rtp://127.0.0.1:${rtpParameters.port}`,
+    "-c:v", "libx264",
+    "-preset", "ultrafast", // Fast encoding for real-time
+    "-tune", "zerolatency", // Low latency
+    "-y",
+    output,
+  ];
 
   console.log(`[FFmpeg] Starting recording: ${output}`);
   
@@ -135,7 +115,7 @@ async function startFfmpegRecording({ rtpParameters, output, kind, consumerRtpPa
 
 async function createConsumerAndRecord(producer, router, filename) {
   try {
-    console.log(`[Recorder] Starting recording: ${producer.kind} -> ${filename}`);
+    console.log(`[Screen Recorder] Starting screen recording: ${producer.kind} -> ${filename}`);
 
     // 1. Create PlainTransport
     const transport = await createRecorderTransport(router);
@@ -198,14 +178,19 @@ async function createConsumerAndRecord(producer, router, filename) {
       port: ffmpegPort
     });
     
-    console.log(`[Recorder] Recording started: ${producer.kind} -> ${filename}`);
+    console.log(`[Screen Recorder] Screen recording started: ${producer.kind} -> ${filename}`);
 
     // Clean up monitor when consumer closes
     consumer.on('@close', () => {
       console.log(`[Recorder] Recording ended: ${filename}`);
+      // Stop FFmpeg process when consumer closes
+      if (ffmpeg && !ffmpeg.killed) {
+        ffmpeg.kill('SIGTERM');
+        console.log(`[FFmpeg] Stopped recording: ${filename}`);
+      }
     });
 
-    return { consumer, transport };
+    return { consumer, transport, ffmpeg };
   } catch (error) {
     console.error('[Recorder] Error creating consumer and record:', error);
     throw error;
