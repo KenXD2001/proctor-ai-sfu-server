@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const { createRouter, getRooms, findRoomId } = require("./mediasoupServer");
+const { createConsumerAndRecord } = require("./recorder");
 
 const mediaCodecs = [
   {
@@ -45,7 +46,7 @@ function startSocketServer(io) {
         const router = await createRouter(mediaCodecs);
         room = { router, peers: new Map() };
         rooms.set(roomId, room);
-        console.log(`[Room] 🆕 Created Room=${roomId}`);
+        console.log(`[Room] Created: ${roomId}`);
       }
 
       room.peers.set(socket.id, {
@@ -57,11 +58,7 @@ function startSocketServer(io) {
       });
       socket.join(roomId);
 
-      console.log(
-        `[Join] User=${shortId(
-          socket.userId
-        )} Role=${role} Room=${roomId} Count=${room.peers.size}`
-      );
+      console.log(`[Join] User=${shortId(socket.userId)} Role=${role} Room=${roomId}`);
 
       socket.emit("router-rtp-capabilities", room.router.rtpCapabilities);
 
@@ -89,7 +86,7 @@ function startSocketServer(io) {
       const peer = room.peers.get(socket.id);
 
       const transport = await room.router.createWebRtcTransport({
-        listenIps: [{ ip: "0.0.0.0", announcedIp: "10.5.50.167" }],
+        listenIps: [{ ip: "0.0.0.0", announcedIp: "192.168.137.171" }],
         enableUdp: true,
         enableTcp: true,
         preferUdp: true,
@@ -110,10 +107,23 @@ function startSocketServer(io) {
       "connect-transport",
       async ({ transportId, dtlsParameters }, callback) => {
         const room = [...rooms.values()].find((r) => r.peers.has(socket.id));
+        if (!room) {
+          console.error(`[Connect-Transport] No room found for socket=${shortId(socket.id)}`);
+          return callback({ error: "Not in any room" });
+        }
+        
         const peer = room.peers.get(socket.id);
+        if (!peer) {
+          console.error(`[Connect-Transport] No peer found for socket=${shortId(socket.id)}`);
+          return callback({ error: "Peer not found" });
+        }
 
         const transport = peer.transports.find((t) => t.id === transportId);
-        if (!transport) return;
+        if (!transport) {
+          console.error(`[Connect-Transport] No transport found for id=${transportId}`);
+          return callback({ error: "Transport not found" });
+        }
+        
         await transport.connect({ dtlsParameters });
         callback();
       }
@@ -124,17 +134,13 @@ function startSocketServer(io) {
         (p) => `${p.kind}:${p.rtpParameters.codecs?.[0]?.mimeType || "unknown"}`
       );
       console.log(
-        `[Produce] 🎥 User=${shortId(peer.socket.userId)} Role=${
-          peer.role
-        } Total=${peer.producers.length} [${kinds.join(", ")}]`
+        `[Produce] User=${shortId(peer.socket.userId)} Role=${peer.role} Total=${peer.producers.length} [${kinds.join(", ")}]`
       );
     }
 
     function logConsumers(peer) {
       console.log(
-        `[Consume] 👀 User=${shortId(peer.socket.userId)} Role=${
-          peer.role
-        } Total=${peer.consumers.length}`
+        `[Consume] User=${shortId(peer.socket.userId)} Role=${peer.role} Total=${peer.consumers.length}`
       );
     }
 
@@ -142,9 +148,22 @@ function startSocketServer(io) {
       "produce",
       async ({ transportId, kind, rtpParameters, appData }, callback) => {
         const room = [...rooms.values()].find((r) => r.peers.has(socket.id));
+        if (!room) {
+          console.error(`[Produce] No room found for socket=${shortId(socket.id)}`);
+          return callback({ error: "Not in any room" });
+        }
+        
         const peer = room.peers.get(socket.id);
+        if (!peer) {
+          console.error(`[Produce] No peer found for socket=${shortId(socket.id)}`);
+          return callback({ error: "Peer not found" });
+        }
+        
         const transport = peer.transports.find((t) => t.id === transportId);
-        if (!transport) return;
+        if (!transport) {
+          console.error(`[Produce] No transport found for id=${transportId}`);
+          return callback({ error: "Transport not found" });
+        }
 
         const producer = await transport.produce({
           kind,
@@ -156,22 +175,24 @@ function startSocketServer(io) {
         producer.appData = { userId: socket.userId, ...appData };
 
         peer.producers.push(producer);
-
         callback({ id: producer.id });
         logProducers(peer);
-
-        // 🔥 Extra logging for stream metadata
-        let metaParts = [
-          `User=${shortId(socket.userId)}`,
-          `Kind=${kind}`,
-          `Type=${type}`,
-        ];
-        if (appData.resolution)
-          metaParts.push(`Resolution=${appData.resolution}`);
+        
+        // Log stream metadata
+        let metaParts = [`User=${shortId(socket.userId)}`, `Kind=${kind}`, `Type=${type}`];
+        if (appData.resolution) metaParts.push(`Resolution=${appData.resolution}`);
         if (appData.fps) metaParts.push(`FPS=${appData.fps}`);
         if (appData.source) metaParts.push(`Source=${appData.source}`);
+        console.log(`[Stream] ${metaParts.join(" ")}`);
 
-        console.log(`[Stream-Meta] 📡 ${metaParts.join(" ")}`);
+        // Add producer event listeners
+        producer.on('transportclose', () => {
+          console.log(`[Producer] Transport closed: ${producer.id}`);
+        });
+
+        producer.on('close', () => {
+          console.log(`[Producer] Producer closed: ${producer.id}`);
+        });
 
         room.peers.forEach((p, id) => {
           if (
@@ -188,13 +209,15 @@ function startSocketServer(io) {
           }
         });
 
+        // Record each producer - we'll handle multiple streams in the recorder
+        const filename = `recordings/${socket.userId}_${producer.kind}_${Date.now()}.mp4`;
+        await createConsumerAndRecord(producer, room.router, filename);
+
         producer.on("close", () => {
           peer.producers = peer.producers.filter(
             (prod) => prod.id !== producer.id
           );
-          console.log(
-            `[Produce-End] ⏹️ User=${shortId(socket.userId)} Role=${peer.role}`
-          );
+          console.log(`[Produce-End] User=${shortId(socket.userId)} Role=${peer.role}`);
           logProducers(peer);
         });
       }
@@ -202,7 +225,16 @@ function startSocketServer(io) {
 
     socket.on("consume", async ({ producerId, rtpCapabilities }, callback) => {
       const room = [...rooms.values()].find((r) => r.peers.has(socket.id));
+      if (!room) {
+        console.error(`[Consume] No room found for socket=${shortId(socket.id)}`);
+        return callback({ error: "Not in any room" });
+      }
+      
       const peer = room.peers.get(socket.id);
+      if (!peer) {
+        console.error(`[Consume] No peer found for socket=${shortId(socket.id)}`);
+        return callback({ error: "Peer not found" });
+      }
 
       if (!room.router.canConsume({ producerId, rtpCapabilities })) {
         return callback({ error: "Cannot consume" });
@@ -211,7 +243,10 @@ function startSocketServer(io) {
       const transport = peer.transports.find(
         (t) => t.appData.direction === "recv"
       );
-      if (!transport) return;
+      if (!transport) {
+        console.error(`[Consume] No receive transport found for socket=${shortId(socket.id)}`);
+        return callback({ error: "Receive transport not found" });
+      }
 
       const consumer = await transport.consume({
         producerId,
@@ -224,9 +259,7 @@ function startSocketServer(io) {
 
       consumer.on("close", () => {
         peer.consumers = peer.consumers.filter((c) => c.id !== consumer.id);
-        console.log(
-          `[Consume-End] ❌ User=${shortId(socket.userId)} Role=${peer.role}`
-        );
+        console.log(`[Consume-End] User=${shortId(socket.userId)} Role=${peer.role}`);
         logConsumers(peer);
       });
 
@@ -239,7 +272,17 @@ function startSocketServer(io) {
 
     socket.on("get-producers", () => {
       const room = [...rooms.values()].find((r) => r.peers.has(socket.id));
+      if (!room) {
+        console.error(`[Get-Producers] No room found for socket=${shortId(socket.id)}`);
+        return;
+      }
+      
       const peer = room.peers.get(socket.id);
+      if (!peer) {
+        console.error(`[Get-Producers] No peer found for socket=${shortId(socket.id)}`);
+        return;
+      }
+      
       const allProducerIds = [];
 
       room.peers.forEach((p) => {
@@ -269,15 +312,11 @@ function startSocketServer(io) {
       peer.transports.forEach((t) => t.close());
       room.peers.delete(socket.id);
 
-      console.log(
-        `[Leave] ❌ User=${shortId(socket.userId)} Role=${
-          peer.role
-        } Room=${roomId} Count=${room.peers.size}`
-      );
+      console.log(`[Leave] User=${shortId(socket.userId)} Role=${peer.role} Room=${roomId}`);
 
       if (room.peers.size === 0) {
         rooms.delete(roomId);
-        console.log(`[Room] 🗑️ Deleted Room=${roomId}`);
+        console.log(`[Room] Deleted: ${roomId}`);
       }
     });
   });

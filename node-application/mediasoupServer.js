@@ -6,7 +6,7 @@ let rooms = new Map();
 async function createWorker() {
   if (!worker) {
     worker = await mediasoup.createWorker();
-    console.log("[Worker] Created ✅");
+    console.log("[Worker] Created");
   }
   return worker;
 }
