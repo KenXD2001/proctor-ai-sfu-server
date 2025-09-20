@@ -1,7 +1,13 @@
+/**
+ * Socket.IO server for mediasoup WebRTC communication
+ * Handles room management, transport creation, producer/consumer management, and screen recording
+ */
+
 const jwt = require("jsonwebtoken");
 const { createRouter, getRooms, findRoomId } = require("./mediasoupServer");
 const { createConsumerAndRecord } = require("./recorder");
 
+// Supported media codecs for WebRTC communication
 const mediaCodecs = [
   {
     kind: "audio",
@@ -17,10 +23,19 @@ const mediaCodecs = [
   },
 ];
 
+/**
+ * Utility function to create short IDs for logging
+ * @param {string} id - Full ID string
+ * @returns {string} - Shortened ID (first 8 characters)
+ */
 function shortId(id) {
   return id ? id.toString().substring(0, 8) : "";
 }
 
+/**
+ * Starts the Socket.IO server with mediasoup integration
+ * @param {Object} io - Socket.IO server instance
+ */
 function startSocketServer(io) {
   const rooms = getRooms();
 
@@ -36,9 +51,7 @@ function startSocketServer(io) {
   });
 
   io.on("connection", (socket) => {
-    console.log(
-      `[Connect] 🔌 Socket=${shortId(socket.id)} User=${shortId(socket.userId)}`
-    );
+    console.log(`[Connect] User connected: ${shortId(socket.userId)}`);
 
     socket.on("join-room", async ({ roomId, role }) => {
       let room = rooms.get(roomId);
@@ -58,7 +71,7 @@ function startSocketServer(io) {
       });
       socket.join(roomId);
 
-      console.log(`[Join] User=${shortId(socket.userId)} Role=${role} Room=${roomId}`);
+      console.log(`[Join] User: ${shortId(socket.userId)} Role: ${role} Room: ${roomId}`);
 
       socket.emit("router-rtp-capabilities", room.router.rtpCapabilities);
 
@@ -83,12 +96,10 @@ function startSocketServer(io) {
     socket.on("create-transport", async ({ direction }, callback) => {
       const room = [...rooms.values()].find((r) => r.peers.has(socket.id));
       if (!room) {
-        console.error(`[Create-Transport] No room found for socket=${shortId(socket.id)}`);
         return callback({ error: "Not in any room" });
       }
       const peer = room.peers.get(socket.id);
       if (!peer) {
-        console.error(`[Create-Transport] No peer found for socket=${shortId(socket.id)}`);
         return callback({ error: "Peer not found" });
       }
 
@@ -103,7 +114,7 @@ function startSocketServer(io) {
       transport.appData = { direction };
       peer.transports.push(transport);
 
-      console.log(`[Transport] Created: ID=${transport.id} Direction=${direction} User=${shortId(socket.userId)} Role=${peer.role}`);
+      console.log(`[Transport] Created: ${transport.id} Direction: ${direction} User: ${shortId(socket.userId)} Role: ${peer.role}`);
 
       callback({
         id: transport.id,
@@ -118,19 +129,16 @@ function startSocketServer(io) {
       async ({ transportId, dtlsParameters }, callback) => {
         const room = [...rooms.values()].find((r) => r.peers.has(socket.id));
         if (!room) {
-          console.error(`[Connect-Transport] No room found for socket=${shortId(socket.id)}`);
           return callback({ error: "Not in any room" });
         }
         
         const peer = room.peers.get(socket.id);
         if (!peer) {
-          console.error(`[Connect-Transport] No peer found for socket=${shortId(socket.id)}`);
           return callback({ error: "Peer not found" });
         }
 
         const transport = peer.transports.find((t) => t.id === transportId);
         if (!transport) {
-          console.error(`[Connect-Transport] No transport found for id=${transportId}`);
           return callback({ error: "Transport not found" });
         }
         
@@ -143,15 +151,7 @@ function startSocketServer(io) {
       const kinds = peer.producers.map(
         (p) => `${p.kind}:${p.rtpParameters.codecs?.[0]?.mimeType || "unknown"}`
       );
-      console.log(
-        `[Produce] User=${shortId(peer.socket.userId)} Role=${peer.role} Total=${peer.producers.length} [${kinds.join(", ")}]`
-      );
-    }
-
-    function logConsumers(peer) {
-      console.log(
-        `[Consume] User=${shortId(peer.socket.userId)} Role=${peer.role} Total=${peer.consumers.length}`
-      );
+      console.log(`[Produce] User: ${shortId(peer.socket.userId)} Role: ${peer.role} Total: ${peer.producers.length} [${kinds.join(", ")}]`);
     }
 
     socket.on(
@@ -159,19 +159,16 @@ function startSocketServer(io) {
       async ({ transportId, kind, rtpParameters, appData }, callback) => {
         const room = [...rooms.values()].find((r) => r.peers.has(socket.id));
         if (!room) {
-          console.error(`[Produce] No room found for socket=${shortId(socket.id)}`);
           return callback({ error: "Not in any room" });
         }
         
         const peer = room.peers.get(socket.id);
         if (!peer) {
-          console.error(`[Produce] No peer found for socket=${shortId(socket.id)}`);
           return callback({ error: "Peer not found" });
         }
         
         const transport = peer.transports.find((t) => t.id === transportId);
         if (!transport) {
-          console.error(`[Produce] No transport found for id=${transportId}`);
           return callback({ error: "Transport not found" });
         }
 
@@ -188,27 +185,16 @@ function startSocketServer(io) {
         callback({ id: producer.id });
         logProducers(peer);
         
-        // Log producer creation with transport details
-        const transportInfo = transport.tuple ? 
-          `IP=${transport.tuple.localIp}:${transport.tuple.localPort}` : 
-          `TransportID=${transport.id}`;
-        console.log(`[Producer] Created: ID=${producer.id} ${transportInfo} User=${shortId(socket.userId)} Kind=${kind}`);
+        console.log(`[Producer] Created: ${producer.id} User: ${shortId(socket.userId)} Kind: ${kind}`);
         
-        // Log stream metadata
-        let metaParts = [`User=${shortId(socket.userId)}`, `Kind=${kind}`, `Type=${type}`];
-        if (appData.resolution) metaParts.push(`Resolution=${appData.resolution}`);
-        if (appData.fps) metaParts.push(`FPS=${appData.fps}`);
-        if (appData.source) metaParts.push(`Source=${appData.source}`);
-        console.log(`[Stream] ${metaParts.join(" ")}`);
-
-        // Add producer event listeners
-        producer.on('transportclose', () => {
-          console.log(`[Producer] Transport closed: ${producer.id}`);
-        });
-
-        producer.on('close', () => {
-          console.log(`[Producer] Producer closed: ${producer.id}`);
-        });
+        // Log stream metadata for screen recordings
+        if (appData.source === 'screen' || appData.type === 'screen' || appData.source === 'screen-share') {
+          let metaParts = [`User: ${shortId(socket.userId)}`, `Kind: ${kind}`, `Type: ${type}`];
+          if (appData.resolution) metaParts.push(`Resolution: ${appData.resolution}`);
+          if (appData.fps) metaParts.push(`FPS: ${appData.fps}`);
+          if (appData.source) metaParts.push(`Source: ${appData.source}`);
+          console.log(`[Stream] ${metaParts.join(" ")}`);
+        }
 
         room.peers.forEach((p, id) => {
           if (
@@ -225,7 +211,7 @@ function startSocketServer(io) {
           }
         });
 
-        // Only record screen share video streams
+        // Start recording for screen share video streams
         const shouldRecord = producer.kind === 'video' && 
                            (appData.source === 'screen' || appData.type === 'screen' || appData.source === 'screen-share');
         
@@ -240,8 +226,6 @@ function startSocketServer(io) {
           peer.recordingSessions.set(producer.id, recordingSession);
           
           console.log(`[Recording] Started screen recording for user: ${shortId(socket.userId)}`);
-        } else {
-          console.log(`[Recording] Skipping recording for ${producer.kind} stream (source: ${appData.source || 'unknown'})`);
         }
 
         producer.on("close", () => {
@@ -253,12 +237,9 @@ function startSocketServer(io) {
           if (peer.recordingSessions && peer.recordingSessions.has(producer.id)) {
             const recordingSession = peer.recordingSessions.get(producer.id);
             if (recordingSession) {
-              // Stop FFmpeg process
               if (recordingSession.ffmpeg && !recordingSession.ffmpeg.killed) {
                 recordingSession.ffmpeg.kill('SIGTERM');
-                console.log(`[Recording] Stopped recording for producer: ${producer.id}`);
               }
-              // Close consumer and transport
               if (recordingSession.consumer) {
                 recordingSession.consumer.close();
               }
@@ -269,7 +250,6 @@ function startSocketServer(io) {
             }
           }
           
-          console.log(`[Produce-End] User=${shortId(socket.userId)} Role=${peer.role}`);
           logProducers(peer);
         });
       }
@@ -278,13 +258,11 @@ function startSocketServer(io) {
     socket.on("consume", async ({ producerId, rtpCapabilities }, callback) => {
       const room = [...rooms.values()].find((r) => r.peers.has(socket.id));
       if (!room) {
-        console.error(`[Consume] No room found for socket=${shortId(socket.id)}`);
         return callback({ error: "Not in any room" });
       }
       
       const peer = room.peers.get(socket.id);
       if (!peer) {
-        console.error(`[Consume] No peer found for socket=${shortId(socket.id)}`);
         return callback({ error: "Peer not found" });
       }
 
@@ -298,8 +276,6 @@ function startSocketServer(io) {
       
       // Auto-create receive transport if it doesn't exist
       if (!transport) {
-        console.log(`[Consume] Auto-creating receive transport for socket=${shortId(socket.id)}`);
-        
         const newTransport = await room.router.createWebRtcTransport({
           listenIps: [{ ip: "0.0.0.0", announcedIp: "192.168.137.127" }],
           enableUdp: true,
@@ -312,7 +288,7 @@ function startSocketServer(io) {
         peer.transports.push(newTransport);
         transport = newTransport;
         
-        console.log(`[Transport] Auto-created: ID=${transport.id} Direction=recv User=${shortId(socket.userId)} Role=${peer.role}`);
+        console.log(`[Transport] Auto-created: ${transport.id} Direction: recv User: ${shortId(socket.userId)} Role: ${peer.role}`);
       }
 
       const consumer = await transport.consume({
@@ -322,13 +298,10 @@ function startSocketServer(io) {
       });
 
       peer.consumers.push(consumer);
-      console.log(`[Consume] Success: ConsumerID=${consumer.id} ProducerID=${producerId} User=${shortId(socket.userId)} TransportID=${transport.id}`);
-      logConsumers(peer);
+      console.log(`[Consume] Consumer created: ${consumer.id} Producer: ${producerId} User: ${shortId(socket.userId)}`);
 
       consumer.on("close", () => {
         peer.consumers = peer.consumers.filter((c) => c.id !== consumer.id);
-        console.log(`[Consume-End] User=${shortId(socket.userId)} Role=${peer.role}`);
-        logConsumers(peer);
       });
 
       callback({
@@ -341,13 +314,11 @@ function startSocketServer(io) {
     socket.on("get-producers", () => {
       const room = [...rooms.values()].find((r) => r.peers.has(socket.id));
       if (!room) {
-        console.error(`[Get-Producers] No room found for socket=${shortId(socket.id)}`);
         return;
       }
       
       const peer = room.peers.get(socket.id);
       if (!peer) {
-        console.error(`[Get-Producers] No peer found for socket=${shortId(socket.id)}`);
         return;
       }
       
@@ -381,12 +352,9 @@ function startSocketServer(io) {
       // Stop all recordings for this peer
       if (peer.recordingSessions) {
         peer.recordingSessions.forEach((recordingSession, producerId) => {
-          // Stop FFmpeg process
           if (recordingSession.ffmpeg && !recordingSession.ffmpeg.killed) {
             recordingSession.ffmpeg.kill('SIGTERM');
-            console.log(`[Recording] Stopped recording for disconnected user: ${shortId(socket.userId)}`);
           }
-          // Close consumer and transport
           if (recordingSession.consumer) {
             recordingSession.consumer.close();
           }
@@ -400,7 +368,7 @@ function startSocketServer(io) {
       peer.transports.forEach((t) => t.close());
       room.peers.delete(socket.id);
 
-      console.log(`[Leave] User=${shortId(socket.userId)} Role=${peer.role} Room=${roomId}`);
+      console.log(`[Leave] User: ${shortId(socket.userId)} Role: ${peer.role} Room: ${roomId}`);
 
       if (room.peers.size === 0) {
         rooms.delete(roomId);
