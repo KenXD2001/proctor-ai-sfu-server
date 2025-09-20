@@ -5,8 +5,26 @@ let rooms = new Map();
 
 async function createWorker() {
   if (!worker) {
-    worker = await mediasoup.createWorker();
+    worker = await mediasoup.createWorker({
+      logLevel: 'warn',
+      logTags: [
+        'info',
+        'ice',
+        'dtls',
+        'rtp',
+        'srtp',
+        'rtcp',
+      ],
+      rtcMinPort: 10000,
+      rtcMaxPort: 59999,
+    });
     console.log("[Worker] Created");
+    
+    // Handle worker events
+    worker.on('died', (error) => {
+      console.error('[Worker] Worker died:', error);
+      worker = null;
+    });
   }
   return worker;
 }

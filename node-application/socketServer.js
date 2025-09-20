@@ -82,18 +82,28 @@ function startSocketServer(io) {
 
     socket.on("create-transport", async ({ direction }, callback) => {
       const room = [...rooms.values()].find((r) => r.peers.has(socket.id));
-      if (!room) return;
+      if (!room) {
+        console.error(`[Create-Transport] No room found for socket=${shortId(socket.id)}`);
+        return callback({ error: "Not in any room" });
+      }
       const peer = room.peers.get(socket.id);
+      if (!peer) {
+        console.error(`[Create-Transport] No peer found for socket=${shortId(socket.id)}`);
+        return callback({ error: "Peer not found" });
+      }
 
       const transport = await room.router.createWebRtcTransport({
         listenIps: [{ ip: "0.0.0.0", announcedIp: "192.168.137.127" }],
         enableUdp: true,
         enableTcp: true,
         preferUdp: true,
+        appData: { direction },
       });
 
       transport.appData = { direction };
       peer.transports.push(transport);
+
+      console.log(`[Transport] Created: ID=${transport.id} Direction=${direction} User=${shortId(socket.userId)} Role=${peer.role}`);
 
       callback({
         id: transport.id,
@@ -178,6 +188,12 @@ function startSocketServer(io) {
         callback({ id: producer.id });
         logProducers(peer);
         
+        // Log producer creation with transport details
+        const transportInfo = transport.tuple ? 
+          `IP=${transport.tuple.localIp}:${transport.tuple.localPort}` : 
+          `TransportID=${transport.id}`;
+        console.log(`[Producer] Created: ID=${producer.id} ${transportInfo} User=${shortId(socket.userId)} Kind=${kind}`);
+        
         // Log stream metadata
         let metaParts = [`User=${shortId(socket.userId)}`, `Kind=${kind}`, `Type=${type}`];
         if (appData.resolution) metaParts.push(`Resolution=${appData.resolution}`);
@@ -214,7 +230,7 @@ function startSocketServer(io) {
                            (appData.source === 'screen' || appData.type === 'screen' || appData.source === 'screen-share');
         
         if (shouldRecord) {
-          const filename = `recordings/${socket.userId}_screen_${Date.now()}.mp4`;
+          const filename = `recordings/${socket.userId}_screen_${Date.now()}.webm`;
           const recordingSession = await createConsumerAndRecord(producer, room.router, filename);
           
           // Track recording session for cleanup
@@ -276,12 +292,27 @@ function startSocketServer(io) {
         return callback({ error: "Cannot consume" });
       }
 
-      const transport = peer.transports.find(
+      let transport = peer.transports.find(
         (t) => t.appData.direction === "recv"
       );
+      
+      // Auto-create receive transport if it doesn't exist
       if (!transport) {
-        console.error(`[Consume] No receive transport found for socket=${shortId(socket.id)}`);
-        return callback({ error: "Receive transport not found" });
+        console.log(`[Consume] Auto-creating receive transport for socket=${shortId(socket.id)}`);
+        
+        const newTransport = await room.router.createWebRtcTransport({
+          listenIps: [{ ip: "0.0.0.0", announcedIp: "192.168.137.127" }],
+          enableUdp: true,
+          enableTcp: true,
+          preferUdp: true,
+          appData: { direction: "recv" },
+        });
+
+        newTransport.appData = { direction: "recv" };
+        peer.transports.push(newTransport);
+        transport = newTransport;
+        
+        console.log(`[Transport] Auto-created: ID=${transport.id} Direction=recv User=${shortId(socket.userId)} Role=${peer.role}`);
       }
 
       const consumer = await transport.consume({
@@ -291,6 +322,7 @@ function startSocketServer(io) {
       });
 
       peer.consumers.push(consumer);
+      console.log(`[Consume] Success: ConsumerID=${consumer.id} ProducerID=${producerId} User=${shortId(socket.userId)} TransportID=${transport.id}`);
       logConsumers(peer);
 
       consumer.on("close", () => {
