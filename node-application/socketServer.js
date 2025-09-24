@@ -85,7 +85,7 @@ function startSocketServer(io) {
             allProducerIds.push({
               producerId: producer.id,
               userId: peer.socket.userId,
-              type: producer.appData?.type || "media",
+              type: producer.appData?.type || "media", // This will be 'screen', 'webcam', or 'mic'
             });
           });
         }
@@ -104,7 +104,7 @@ function startSocketServer(io) {
       }
 
       const transport = await room.router.createWebRtcTransport({
-        listenIps: [{ ip: "0.0.0.0", announcedIp: "192.168.137.127" }],
+        listenIps: [{ ip: "0.0.0.0", announcedIp: "10.5.49.152" }],
         enableUdp: true,
         enableTcp: true,
         preferUdp: true,
@@ -196,6 +196,7 @@ function startSocketServer(io) {
           console.log(`[Stream] ${metaParts.join(" ")}`);
         }
 
+        // Notify relevant peers about the new producer
         room.peers.forEach((p, id) => {
           if (
             (peer.role === "student" && p.role === "invigilator") ||
@@ -205,8 +206,9 @@ function startSocketServer(io) {
               io.to(id).emit("new-producer", {
                 producerId: producer.id,
                 userId: socket.userId,
-                type: producer.appData.type,
+                type: producer.appData.type, // This will be 'screen', 'webcam', or 'mic'
               });
+              console.log(`[Producer] Notified ${p.role} ${shortId(p.socket.userId)} about ${producer.appData.type} stream from ${shortId(socket.userId)}`);
             }
           }
         });
@@ -277,7 +279,7 @@ function startSocketServer(io) {
       // Auto-create receive transport if it doesn't exist
       if (!transport) {
         const newTransport = await room.router.createWebRtcTransport({
-          listenIps: [{ ip: "0.0.0.0", announcedIp: "192.168.137.127" }],
+          listenIps: [{ ip: "0.0.0.0", announcedIp: "10.5.49.152" }],
           enableUdp: true,
           enableTcp: true,
           preferUdp: true,
@@ -334,7 +336,7 @@ function startSocketServer(io) {
             allProducerIds.push({
               producerId: prod.id,
               userId: p.socket.userId,
-              type: prod.appData?.type || "media",
+              type: prod.appData?.type || "media", // This will be 'screen', 'webcam', or 'mic'
             })
           );
         }
