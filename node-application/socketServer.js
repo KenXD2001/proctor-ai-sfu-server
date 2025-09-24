@@ -5,7 +5,7 @@
 
 const jwt = require("jsonwebtoken");
 const { createRouter, getRooms, findRoomId } = require("./mediasoupServer");
-const { createConsumerAndRecord } = require("./recorder");
+const { createConsumerAndRecord, createWebcamRecording, createAudioRecording } = require("./recorder");
 
 // Supported media codecs for WebRTC communication
 const mediaCodecs = [
@@ -104,7 +104,7 @@ function startSocketServer(io) {
       }
 
       const transport = await room.router.createWebRtcTransport({
-        listenIps: [{ ip: "0.0.0.0", announcedIp: "10.5.49.152" }],
+        listenIps: [{ ip: "0.0.0.0", announcedIp: "192.168.1.9" }],
         enableUdp: true,
         enableTcp: true,
         preferUdp: true,
@@ -213,12 +213,18 @@ function startSocketServer(io) {
           }
         });
 
-        // Start recording for screen share video streams
-        const shouldRecord = producer.kind === 'video' && 
-                           (appData.source === 'screen' || appData.type === 'screen' || appData.source === 'screen-share');
+        // Start recording based on stream type
+        const shouldRecordScreen = producer.kind === 'video' && 
+                                 (appData.source === 'screen' || appData.type === 'screen' || appData.source === 'screen-share');
         
-        if (shouldRecord) {
-          const filename = `recordings/${socket.userId}_screen_${Date.now()}.webm`;
+        const shouldRecordWebcam = producer.kind === 'video' && 
+                                 (appData.source === 'webcam' || appData.type === 'webcam' || appData.source === 'camera');
+        
+        const shouldRecordAudio = producer.kind === 'audio' && 
+                                (appData.source === 'mic' || appData.type === 'mic' || appData.source === 'microphone');
+        
+        if (shouldRecordScreen) {
+          const filename = `recordings/screen/${socket.userId}_screen_${Date.now()}.webm`;
           const recordingSession = await createConsumerAndRecord(producer, room.router, filename);
           
           // Track recording session for cleanup
@@ -228,6 +234,30 @@ function startSocketServer(io) {
           peer.recordingSessions.set(producer.id, recordingSession);
           
           console.log(`[Recording] Started screen recording for user: ${shortId(socket.userId)}`);
+        }
+        
+        if (shouldRecordWebcam) {
+          const recordingSession = await createWebcamRecording(producer, room.router, socket.userId);
+          
+          // Track recording session for cleanup
+          if (!peer.recordingSessions) {
+            peer.recordingSessions = new Map();
+          }
+          peer.recordingSessions.set(producer.id, recordingSession);
+          
+          console.log(`[Recording] Started webcam frame capture (1 frame/sec) for user: ${shortId(socket.userId)}`);
+        }
+        
+        if (shouldRecordAudio) {
+          const recordingSession = await createAudioRecording(producer, room.router, socket.userId);
+          
+          // Track recording session for cleanup
+          if (!peer.recordingSessions) {
+            peer.recordingSessions = new Map();
+          }
+          peer.recordingSessions.set(producer.id, recordingSession);
+          
+          console.log(`[Recording] Started audio recording (10s loops) for user: ${shortId(socket.userId)}`);
         }
 
         producer.on("close", () => {
@@ -239,15 +269,26 @@ function startSocketServer(io) {
           if (peer.recordingSessions && peer.recordingSessions.has(producer.id)) {
             const recordingSession = peer.recordingSessions.get(producer.id);
             if (recordingSession) {
+              // Stop FFmpeg process
               if (recordingSession.ffmpeg && !recordingSession.ffmpeg.killed) {
                 recordingSession.ffmpeg.kill('SIGTERM');
               }
+              
+              // Close consumer
               if (recordingSession.consumer) {
                 recordingSession.consumer.close();
               }
+              
+              // Close transport
               if (recordingSession.transport) {
                 recordingSession.transport.close();
               }
+              
+              // Clear recording loop for audio recordings (if exists)
+              if (recordingSession.recordingLoop) {
+                clearInterval(recordingSession.recordingLoop);
+              }
+              
               peer.recordingSessions.delete(producer.id);
             }
           }
@@ -279,7 +320,7 @@ function startSocketServer(io) {
       // Auto-create receive transport if it doesn't exist
       if (!transport) {
         const newTransport = await room.router.createWebRtcTransport({
-          listenIps: [{ ip: "0.0.0.0", announcedIp: "10.5.49.152" }],
+          listenIps: [{ ip: "0.0.0.0", announcedIp: "192.168.1.9" }],
           enableUdp: true,
           enableTcp: true,
           preferUdp: true,
@@ -354,14 +395,24 @@ function startSocketServer(io) {
       // Stop all recordings for this peer
       if (peer.recordingSessions) {
         peer.recordingSessions.forEach((recordingSession, producerId) => {
+          // Stop FFmpeg process
           if (recordingSession.ffmpeg && !recordingSession.ffmpeg.killed) {
             recordingSession.ffmpeg.kill('SIGTERM');
           }
+          
+          // Close consumer
           if (recordingSession.consumer) {
             recordingSession.consumer.close();
           }
+          
+          // Close transport
           if (recordingSession.transport) {
             recordingSession.transport.close();
+          }
+          
+          // Clear recording loop for audio recordings (if exists)
+          if (recordingSession.recordingLoop) {
+            clearInterval(recordingSession.recordingLoop);
           }
         });
         peer.recordingSessions.clear();
