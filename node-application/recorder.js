@@ -2,6 +2,10 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const net = require("net");
+const FaceAnalysisService = require("./faceAnalysisService");
+
+// Initialize face analysis service
+const faceAnalysisService = new FaceAnalysisService();
 
 /**
  * Checks if a port is available for use
@@ -116,7 +120,8 @@ a=sendonly`;
       ];
     }
   } else if (kind === 'audio') {
-    // Audio recording: 10-second segments to MP3 for web compatibility
+    // Audio recording: 5-second segments for real-time analysis (10-second for calibration)
+    // Use 5-second segments for faster real-time processing
     sdpContent = `v=0
 o=- 0 0 IN IP4 127.0.0.1
 s=mediasoup recording
@@ -134,7 +139,7 @@ a=sendonly`;
       "-ar", "44100",
       "-ac", "2",
       "-f", "segment",
-      "-segment_time", "10",
+      "-segment_time", "5", // Changed from 10 to 5 seconds for faster analysis
       "-segment_format", "mp3",
       "-fflags", "+genpts",
       "-avoid_negative_ts", "make_zero",
@@ -404,15 +409,53 @@ async function createWebcamRecording(producer, router, userId) {
     await consumer.resume();
     console.log(`[Recorder] Webcam frame capture active for user: ${userId}`);
 
+    // Start face analysis for captured frames
+    const frameCaptureLoop = setInterval(async () => {
+      try {
+        const webcamDir = `recordings/webcam`;
+        
+        // Check if webcam directory exists
+        if (!fs.existsSync(webcamDir)) {
+          return;
+        }
+        
+        // Look for frame files with the user's pattern
+        const files = fs.readdirSync(webcamDir);
+        const userFrames = files.filter(file => 
+          file.startsWith(`${userId}_frame_`) && file.endsWith('.jpg')
+        );
+        
+        if (userFrames.length > 0) {
+          // Get the most recent frame
+          const latestFrame = userFrames.sort().pop();
+          const framePath = path.join(webcamDir, latestFrame);
+          
+          console.log(`[Recorder] Found frame: ${latestFrame}`);
+          
+          // Send frame for face analysis
+          await faceAnalysisService.startAnalysis(userId, framePath);
+        }
+      } catch (error) {
+        console.error(`[Recorder] Frame capture error for user ${userId}:`, error.message);
+      }
+    }, 5000); // Check for frames every 5 seconds
+
     // Clean up when consumer closes
     consumer.on('@close', () => {
       console.log(`[Recorder] Webcam frame capture ended for user: ${userId}`);
+      
+      // Stop face analysis
+      faceAnalysisService.stopAnalysis(userId);
+      
+      // Clear frame capture interval
+      clearInterval(frameCaptureLoop);
+      
       if (ffmpeg && !ffmpeg.killed) {
         ffmpeg.kill('SIGTERM');
       }
     });
 
-    return { consumer, transport, ffmpeg };
+    return { consumer, transport, ffmpeg, frameCaptureLoop };
   } catch (error) {
     console.error('[Recorder] Webcam frame capture error:', error.message);
     throw error;

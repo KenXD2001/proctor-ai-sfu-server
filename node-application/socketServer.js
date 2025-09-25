@@ -6,6 +6,10 @@
 const jwt = require("jsonwebtoken");
 const { createRouter, getRooms, findRoomId } = require("./mediasoupServer");
 const { createConsumerAndRecord, createWebcamRecording, createAudioRecording } = require("./recorder");
+const FaceAnalysisService = require("./faceAnalysisService");
+
+// Initialize face analysis service
+const faceAnalysisService = new FaceAnalysisService();
 
 // Supported media codecs for WebRTC communication
 const mediaCodecs = [
@@ -257,7 +261,7 @@ function startSocketServer(io) {
           }
           peer.recordingSessions.set(producer.id, recordingSession);
           
-          console.log(`[Recording] Started audio recording (10s loops) for user: ${shortId(socket.userId)}`);
+          console.log(`[Recording] Started audio recording (5s loops) for user: ${shortId(socket.userId)}`);
         }
 
         producer.on("close", () => {
