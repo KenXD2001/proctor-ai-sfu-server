@@ -1,126 +1,277 @@
+/**
+ * Professional ProctorAI SFU Server
+ * Optimized Express server with Socket.IO and MediaSoup integration
+ */
+
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
 const socketIO = require("socket.io");
+const path = require("path");
+const config = require('./config');
+const { logger, createLogger } = require('./utils/logger');
+const { asyncHandler } = require('./utils/errors');
 const { startSocketServer } = require("./socketServer");
-const AudioIntegrationService = require("./audioIntegration");
+const { mediaSoupManager } = require('./mediasoupServer');
 
-const app = express();
-app.use(cors());
-app.use(express.json());
+const appLogger = createLogger('App');
 
-// Store audio integration service globally for API access
-let audioIntegrationService = null;
-
-const server = http.createServer(app);
-const io = socketIO(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
-    credentials: true,
-  },
-});
-
-// initialize socket.io + mediasoup
-startSocketServer(io);
-
-// initialize audio integration service
-const audioIntegration = new AudioIntegrationService();
-audioIntegrationService = audioIntegration;
-
-// listen on all network interfaces (0.0.0.0)
-const PORT = 3000;
-server.listen(PORT, "0.0.0.0", async () => {
-  console.log(`SFU server running on port ${PORT}`);
-  
-  // Initialize audio integration service
-  try {
-    await audioIntegration.initialize();
-    console.log('Audio integration service initialized successfully');
-  } catch (error) {
-    console.error('Failed to initialize audio integration service:', error.message);
-    console.log('Audio recording will continue, but analysis will be disabled');
-  }
-});
-
-// API endpoints for audio integration
-app.get('/audio-integration/status', (req, res) => {
-  if (!audioIntegrationService) {
-    return res.status(503).json({ error: 'Audio integration service not initialized' });
-  }
-  
-  const status = audioIntegrationService.getStatus();
-  res.json(status);
-});
-
-// API endpoints for face analysis integration
-app.get('/face-analysis/status', async (req, res) => {
-  try {
-    const FaceAnalysisService = require('./faceAnalysisService');
-    const faceAnalysisService = new FaceAnalysisService();
+class ProctorAIServer {
+  constructor() {
+    this.app = express();
+    this.server = null;
+    this.io = null;
+    this.isShuttingDown = false;
     
-    const status = faceAnalysisService.getStatus();
-    const serviceHealth = await faceAnalysisService.checkServiceHealth();
+    this.setupMiddleware();
+    this.setupRoutes();
+    this.setupSocketIO();
+    this.setupGracefulShutdown();
+  }
+
+  /**
+   * Setup Express middleware
+   */
+  setupMiddleware() {
+    // CORS configuration
+    this.app.use(cors(config.server.cors));
     
-    res.json({
-      ...status,
-      pythonServiceHealthy: serviceHealth,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({ 
-      error: 'Face analysis service error', 
-      details: error.message 
+    // JSON parsing with size limit
+    this.app.use(express.json({ limit: '10mb' }));
+    
+    // Request logging
+    this.app.use((req, res, next) => {
+      appLogger.debug('HTTP request', {
+        method: req.method,
+        url: req.url,
+        userAgent: req.get('User-Agent'),
+        ip: req.ip
+      });
+      next();
     });
   }
-});
 
-app.post('/audio-integration/calibrate', async (req, res) => {
-  try {
-    if (!audioIntegrationService) {
-      return res.status(503).json({ error: 'Audio integration service not initialized' });
-    }
+  /**
+   * Setup API routes
+   */
+  setupRoutes() {
+    // Health check endpoint
+    this.app.get('/health', asyncHandler(async (req, res) => {
+      const stats = mediaSoupManager.getStats();
+      
+      res.json({
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        service: 'proctor-ai-sfu-server',
+        version: process.env.npm_package_version || '1.0.0',
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        stats
+      });
+    }));
+
+    // Server statistics endpoint
+    this.app.get('/stats', asyncHandler(async (req, res) => {
+      const stats = mediaSoupManager.getStats();
+      res.json({
+        timestamp: new Date().toISOString(),
+        server: {
+          uptime: process.uptime(),
+          memory: process.memoryUsage(),
+          cpu: process.cpuUsage(),
+        },
+        mediasoup: stats,
+        config: {
+          webrtc: config.webrtc,
+          recording: config.recording,
+          roles: config.roles,
+        }
+      });
+    }));
+
+    // Room information endpoint
+    this.app.get('/rooms', asyncHandler(async (req, res) => {
+      const rooms = mediaSoupManager.getRooms();
+      const roomInfo = Array.from(rooms.entries()).map(([roomId, room]) => ({
+        id: roomId,
+        peers: room.peers.size,
+        createdAt: room.createdAt,
+        lastActivity: room.lastActivity,
+        routerId: room.router.id,
+      }));
+
+      res.json({
+        timestamp: new Date().toISOString(),
+        totalRooms: rooms.size,
+        rooms: roomInfo
+      });
+    }));
+
+    // 404 handler
+    this.app.use('*', (req, res) => {
+      res.status(404).json({
+        error: 'Not found',
+        path: req.originalUrl,
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    // Global error handler
+    this.app.use((error, req, res, next) => {
+      appLogger.error('Express error', {
+        error: error.message,
+        stack: error.stack,
+        url: req.url,
+        method: req.method
+      });
+
+      res.status(error.statusCode || 500).json({
+        error: error.message || 'Internal server error',
+        timestamp: new Date().toISOString()
+      });
+    });
+  }
+
+  /**
+   * Setup Socket.IO server
+   */
+  setupSocketIO() {
+    this.server = http.createServer(this.app);
     
-    const { calibrationFilePath } = req.body;
-    
-    if (!calibrationFilePath) {
-      return res.status(400).json({ error: 'calibrationFilePath is required' });
-    }
-    
-    const result = await audioIntegrationService.performCalibration(calibrationFilePath);
-    res.json(result);
+    this.io = socketIO(this.server, {
+      cors: config.server.cors,
+      transports: ['websocket', 'polling'],
+      pingTimeout: 60000,
+      pingInterval: 25000,
+      maxHttpBufferSize: 1e8, // 100MB
+    });
+
+    // Initialize Socket.IO handlers
+    startSocketServer(this.io);
+
+    // Socket.IO connection logging
+    this.io.on('connection', (socket) => {
+      appLogger.info('Socket.IO connection established', {
+        socketId: socket.id,
+        totalConnections: this.io.engine.clientsCount
+      });
+
+      socket.on('disconnect', (reason) => {
+        appLogger.info('Socket.IO connection closed', {
+          socketId: socket.id,
+          reason,
+          totalConnections: this.io.engine.clientsCount
+        });
+      });
+    });
+
+    // Socket.IO error handling
+    this.io.on('error', (error) => {
+      appLogger.error('Socket.IO error', { error: error.message });
+    });
+  }
+
+  /**
+   * Setup graceful shutdown handlers
+   */
+  setupGracefulShutdown() {
+    const shutdown = async (signal) => {
+      if (this.isShuttingDown) return;
+      
+      this.isShuttingDown = true;
+      appLogger.info(`Received ${signal}, starting graceful shutdown`);
+
+      try {
+        // Stop accepting new connections
+        if (this.server) {
+          this.server.close(() => {
+            appLogger.info('HTTP server closed');
+          });
+        }
+
+        // Close Socket.IO server
+        if (this.io) {
+          this.io.close(() => {
+            appLogger.info('Socket.IO server closed');
+          });
+        }
+
+        // Shutdown MediaSoup manager
+        await mediaSoupManager.shutdown();
+
+        appLogger.info('Graceful shutdown completed');
+        process.exit(0);
     
   } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+        appLogger.error('Error during shutdown', { error: error.message });
+        process.exit(1);
+      }
+    };
 
-app.get('/audio-integration/check-calibration', async (req, res) => {
-  try {
-    if (!audioIntegrationService) {
-      return res.status(503).json({ error: 'Audio integration service not initialized' });
-    }
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
     
-    await audioIntegrationService.checkCalibrationStatus();
-    const status = audioIntegrationService.getStatus();
-    res.json(status);
+    // Handle uncaught exceptions
+    process.on('uncaughtException', (error) => {
+      appLogger.error('Uncaught exception', { error: error.message, stack: error.stack });
+      shutdown('uncaughtException');
+    });
+
+    process.on('unhandledRejection', (reason, promise) => {
+      appLogger.error('Unhandled rejection', { reason, promise });
+      shutdown('unhandledRejection');
+    });
+  }
+
+  /**
+   * Start the server
+   */
+  async start() {
+    return new Promise((resolve, reject) => {
+      try {
+        this.server.listen(config.server.port, config.server.host, () => {
+          appLogger.info('ProctorAI SFU Server started', {
+            port: config.server.port,
+            host: config.server.host,
+            nodeVersion: process.version,
+            pid: process.pid
+          });
+          resolve();
+        });
+
+        this.server.on('error', (error) => {
+          appLogger.error('Server startup error', { error: error.message });
+          reject(error);
+        });
     
   } catch (error) {
-    res.status(500).json({ error: error.message });
+        appLogger.error('Failed to start server', { error: error.message });
+        reject(error);
+      }
+    });
   }
-});
 
-app.post('/audio-integration/reset-calibration', (req, res) => {
-  try {
-    if (!audioIntegrationService) {
-      return res.status(503).json({ error: 'Audio integration service not initialized' });
-    }
-    
-    audioIntegrationService.resetAutoCalibrationAttempts();
-    const status = audioIntegrationService.getStatus();
-    res.json({ message: 'Auto-calibration attempts reset', status });
-    
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  /**
+   * Get server instance for testing
+   */
+  getServer() {
+    return {
+      app: this.app,
+      server: this.server,
+      io: this.io
+    };
   }
-});
+}
+
+// Create and start server
+const server = new ProctorAIServer();
+
+// Start server if this file is run directly
+if (require.main === module) {
+  server.start().catch((error) => {
+    appLogger.error('Failed to start ProctorAI SFU Server', { error: error.message });
+    process.exit(1);
+  });
+}
+
+module.exports = { ProctorAIServer, server };

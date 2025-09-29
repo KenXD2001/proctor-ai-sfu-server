@@ -1,575 +1,539 @@
+/**
+ * Professional recording service with optimized FFmpeg integration
+ * Handles screen, webcam, and audio recording with proper error handling
+ */
+
 const { spawn } = require("child_process");
-const fs = require("fs");
+const fs = require("fs").promises;
+const fsSync = require("fs");
 const path = require("path");
 const net = require("net");
-const FaceAnalysisService = require("./faceAnalysisService");
+const config = require('./config');
+const { logger, createLogger } = require('./utils/logger');
+const { RecordingError, validateRequired } = require('./utils/errors');
 
-// Initialize face analysis service
-const faceAnalysisService = new FaceAnalysisService();
+const recordLogger = createLogger('Recorder');
 
 /**
- * Checks if a port is available for use
- * @param {number} port - Port number to check
- * @returns {Promise<boolean>} - True if port is available
+ * Recording session manager
  */
-function isPortAvailable(port) {
+class RecordingSession {
+  constructor(producerId, type, outputPath) {
+    this.producerId = producerId;
+    this.type = type;
+    this.outputPath = outputPath;
+    this.ffmpeg = null;
+    this.consumer = null;
+    this.transport = null;
+    this.sdpFile = null;
+    this.createdAt = new Date();
+    this.status = 'initializing';
+  }
+
+  async cleanup() {
+    this.status = 'cleaning';
+    
+    try {
+      // Stop FFmpeg process
+      if (this.ffmpeg && !this.ffmpeg.killed) {
+        this.ffmpeg.kill('SIGTERM');
+        recordLogger.info('FFmpeg process terminated', { producerId: this.producerId });
+      }
+      
+      // Close consumer
+      if (this.consumer) {
+        this.consumer.close();
+        recordLogger.info('Consumer closed', { producerId: this.producerId });
+      }
+      
+      // Close transport
+      if (this.transport) {
+        this.transport.close();
+        recordLogger.info('Transport closed', { producerId: this.producerId });
+      }
+      
+      // Clean up SDP file
+      if (this.sdpFile && fsSync.existsSync(this.sdpFile)) {
+        await fs.unlink(this.sdpFile);
+        recordLogger.info('SDP file cleaned up', { sdpFile: this.sdpFile });
+      }
+      
+      this.status = 'completed';
+      recordLogger.info('Recording session cleaned up', { 
+        producerId: this.producerId,
+        duration: Date.now() - this.createdAt.getTime()
+      });
+      
+    } catch (error) {
+      recordLogger.error('Error during cleanup', { 
+        producerId: this.producerId, 
+        error: error.message 
+      });
+      this.status = 'error';
+    }
+  }
+}
+
+/**
+ * Port availability checker with timeout
+ */
+function isPortAvailable(port, timeout = 1000) {
   return new Promise((resolve) => {
     const server = net.createServer();
+    const timer = setTimeout(() => {
+      server.close();
+      resolve(false);
+    }, timeout);
+
     server.listen(port, () => {
-      server.once('close', () => {
-        resolve(true);
-      });
+      clearTimeout(timer);
+      server.once('close', () => resolve(true));
       server.close();
     });
+
     server.on('error', () => {
+      clearTimeout(timer);
       resolve(false);
     });
   });
 }
 
 /**
- * Creates a PlainTransport for recording RTP streams
- * Uses rtcpMux: true and comedia: false for optimal recording performance
- * @param {Object} router - mediasoup router instance
- * @returns {Promise<Object>} - PlainTransport instance
+ * Create optimized recorder transport
  */
 async function createRecorderTransport(router) {
-  const transport = await router.createPlainTransport({
-    listenIp: { ip: "127.0.0.1", announcedIp: "127.0.0.1" },
-    rtcpMux: true,
-    comedia: false,
-  });
+  try {
+    const transport = await router.createPlainTransport({
+      listenIp: { ip: "127.0.0.1", announcedIp: "127.0.0.1" },
+      rtcpMux: true,
+      comedia: false,
+    });
 
-  const tuple = transport.tuple;
-  if (!tuple || !tuple.localIp || !tuple.localPort) {
-    throw new Error('Transport tuple not available after creation');
+    const tuple = transport.tuple;
+    if (!tuple?.localIp || !tuple?.localPort) {
+      throw new RecordingError('Transport tuple not available after creation');
+    }
+
+    recordLogger.transport('created', transport.id, {
+      ip: tuple.localIp,
+      port: tuple.localPort
+    });
+
+    transport.on('@close', () => {
+      recordLogger.transport('closed', transport.id);
+    });
+
+    return transport;
+  } catch (error) {
+    recordLogger.error('Failed to create recorder transport', { error: error.message });
+    throw new RecordingError(`Failed to create transport: ${error.message}`);
   }
-
-  console.log(`[Recorder] Transport created: ${transport.id} on ${tuple.localIp}:${tuple.localPort}`);
-
-  transport.on('@close', () => {
-    console.log(`[Recorder] Transport closed: ${transport.id}`);
-  });
-
-  return transport;
 }
 
 /**
- * Starts FFmpeg process to record RTP stream to WebM file
- * Creates SDP file for FFmpeg to understand RTP stream format
- * @param {Object} params - Recording parameters
- * @param {Object} params.rtpParameters - RTP connection parameters
- * @param {string} params.output - Output file path
- * @param {string} params.kind - Media kind (video/audio)
- * @param {Object} params.consumerRtpParams - Consumer RTP parameters
- * @param {string} params.recordingType - Type of recording (screen/webcam/audio)
- * @returns {Promise<Object>} - FFmpeg process instance
+ * Wait for producer to become active with timeout
  */
-async function startFfmpegRecording({ rtpParameters, output, kind, consumerRtpParams, recordingType = 'screen' }) {
-  const recordingsDir = path.dirname(output);
-  if (!fs.existsSync(recordingsDir)) {
-    fs.mkdirSync(recordingsDir, { recursive: true });
-  }
-
-  const payloadType = consumerRtpParams?.codecs?.[0]?.payloadType || 96;
-  let sdpContent, args;
-  
-  // Create SDP file path
-  const sdpFile = path.join(path.dirname(output), `temp_${Date.now()}.sdp`);
-
-  if (kind === 'video') {
-    // Video recording (screen or webcam)
-    const codec = recordingType === 'webcam' ? 'VP8' : 'VP8';
-    const clockRate = 90000;
+async function waitForProducerActive(producer, timeout = config.timeouts.producerActive) {
+  return new Promise((resolve, reject) => {
+    const startTime = Date.now();
     
-    sdpContent = `v=0
+    const checkActive = () => {
+      if (!producer.paused && !producer.closed) {
+        resolve(true);
+        return;
+      }
+      
+      if (Date.now() - startTime > timeout) {
+        reject(new RecordingError('Producer did not become active within timeout'));
+        return;
+      }
+      
+      setTimeout(checkActive, config.timeouts.producerCheckInterval);
+    };
+    
+    checkActive();
+  });
+}
+
+/**
+ * Calculate optimal FFmpeg port
+ */
+function calculateFFmpegPort(basePort) {
+  let ffmpegPort = basePort + 10000;
+  
+  if (ffmpegPort > 65535) {
+    ffmpegPort = basePort + 1000;
+    if (ffmpegPort > 65535) {
+      ffmpegPort = 50000 + (basePort % 1000);
+    }
+  }
+  
+  return ffmpegPort;
+}
+
+/**
+ * Generate SDP content for FFmpeg
+ */
+function generateSDPContent(rtpParameters, payloadType, kind, recordingType) {
+  const codec = kind === 'video' ? 'VP8' : 'opus';
+  const clockRate = kind === 'video' ? 90000 : 48000;
+  const channels = kind === 'audio' ? 2 : undefined;
+  
+  let sdpContent = `v=0
 o=- 0 0 IN IP4 127.0.0.1
 s=mediasoup recording
 c=IN IP4 127.0.0.1
-t=0 0
+t=0 0`;
+
+  if (kind === 'video') {
+    sdpContent += `
 m=video ${rtpParameters.port} RTP/AVP ${payloadType}
 a=rtpmap:${payloadType} ${codec}/${clockRate}
-a=sendonly`;
+a=sendonly
+a=fmtp:${payloadType} x-google-start-bitrate=800;x-google-min-bitrate=400;x-google-max-bitrate=2000`;
+  } else {
+    sdpContent += `
+m=audio ${rtpParameters.port} RTP/AVP ${payloadType}
+a=rtpmap:${payloadType} ${codec}/${clockRate}${channels ? `/${channels}` : ''}
+a=sendonly
+a=fmtp:${payloadType} useinbandfec=1;stereo=1;maxplaybackrate=48000`;
+  }
+  
+  return sdpContent;
+}
 
+/**
+ * Generate FFmpeg arguments based on recording type
+ */
+function generateFFmpegArgs(recordingType, kind, output) {
+  const baseArgs = [
+    "-protocol_whitelist", "file,udp,rtp",
+    "-loglevel", config.recording.ffmpeg.logLevel,
+    "-y",
+    "-f", "sdp", // Force SDP format for input
+    "-fflags", "+genpts", // Only use valid FFmpeg flags
+    "-avoid_negative_ts", "make_zero", // Separate parameter for timestamp handling
+    "-analyzeduration", "0", // Analyze input duration
+    "-probesize", "32", // Probe size for faster startup
+    "-rtbufsize", "64M", // Real-time buffer size
+    "-max_delay", "500000", // Maximum delay in microseconds
+  ];
+
+  if (kind === 'video') {
     if (recordingType === 'webcam') {
-      // Webcam: 1 FPS frame capture to individual JPEG images
-      args = [
-        "-protocol_whitelist", "file,udp,rtp",
-        "-i", sdpFile,
-        "-vf", "fps=1",
-        "-q:v", "2",
-        "-fflags", "+genpts",
-        "-avoid_negative_ts", "make_zero",
-        "-loglevel", "error",
-        "-timeout", "5000000",
-        "-y",
-        output, // This will be a pattern like user123_frame_%d.jpg
+      // Single frame capture - output options must come after input
+      return [
+        ...baseArgs,
+        "-i", "INPUT_PLACEHOLDER", // Will be replaced with SDP file
+        "-vframes", config.recording.webcam.maxFrames.toString(),
+        "-q:v", config.recording.webcam.quality.toString(),
+        output,
       ];
     } else {
-      // Screen: Original WebM recording
-      args = [
-        "-protocol_whitelist", "file,udp,rtp",
-        "-i", sdpFile,
+      // Screen recording - direct copy for efficiency
+      return [
+        ...baseArgs,
+        "-i", "INPUT_PLACEHOLDER", // Will be replaced with SDP file
         "-c:v", "copy",
-        "-fflags", "+genpts",
-        "-avoid_negative_ts", "make_zero",
-        "-loglevel", "error",
-        "-timeout", "5000000",
-        "-y",
         output,
       ];
     }
-  } else if (kind === 'audio') {
-    // Audio recording: 5-second segments for real-time analysis (10-second for calibration)
-    // Use 5-second segments for faster real-time processing
-    sdpContent = `v=0
-o=- 0 0 IN IP4 127.0.0.1
-s=mediasoup recording
-c=IN IP4 127.0.0.1
-t=0 0
-m=audio ${rtpParameters.port} RTP/AVP ${payloadType}
-a=rtpmap:${payloadType} opus/48000/2
-a=sendonly`;
-
-    args = [
-      "-protocol_whitelist", "file,udp,rtp",
-      "-i", sdpFile,
-      "-c:a", "libmp3lame",
-      "-b:a", "128k",
-      "-ar", "44100",
-      "-ac", "2",
-      "-f", "segment",
-      "-segment_time", "5", // Changed from 10 to 5 seconds for faster analysis
-      "-segment_format", "mp3",
-      "-fflags", "+genpts",
-      "-avoid_negative_ts", "make_zero",
-      "-loglevel", "error",
-      "-timeout", "5000000",
-      "-y",
-      output, // This will be a pattern like user123_audio_%d.mp3
-    ];
   } else {
-    throw new Error(`Unsupported media kind: ${kind}`);
+    // Audio recording - output options must come after input
+    return [
+      ...baseArgs,
+      "-i", "INPUT_PLACEHOLDER", // Will be replaced with SDP file
+      "-c:a", config.recording.audio.codec,
+      "-b:a", config.recording.audio.bitrate,
+      "-ar", config.recording.audio.sampleRate.toString(),
+      "-ac", config.recording.audio.channels.toString(),
+      "-t", config.recording.audio.duration.toString(),
+      output,
+    ];
   }
-
-  // Write SDP file
-  fs.writeFileSync(sdpFile, sdpContent);
-
-  console.log(`[FFmpeg] Starting recording: ${path.basename(output)}`);
-  
-  const portAvailable = await isPortAvailable(rtpParameters.port);
-  if (!portAvailable) {
-    throw new Error(`Port ${rtpParameters.port} is not available`);
-  }
-  
-  const ffmpeg = spawn("ffmpeg", args);
-
-  let ffmpegStarted = false;
-  let rtpDataReceived = false;
-
-  ffmpeg.stderr.on("data", (data) => {
-    const message = data.toString();
-    
-    if (message.includes("Stream mapping:") && !ffmpegStarted) {
-      ffmpegStarted = true;
-      console.log(`[FFmpeg] Recording started successfully`);
-    }
-    
-    if (message.includes("frame=") || message.includes("size=")) {
-      if (!rtpDataReceived) {
-        rtpDataReceived = true;
-        console.log(`[FFmpeg] Receiving video data`);
-      }
-    }
-    
-    if (message.toLowerCase().includes("error") || message.toLowerCase().includes("failed")) {
-      console.error(`[FFmpeg] ${message.trim()}`);
-    }
-  });
-
-  ffmpeg.on("close", (code) => {
-    if (rtpDataReceived) {
-      console.log(`[FFmpeg] Recording completed successfully`);
-    } else {
-      console.log(`[FFmpeg] Recording stopped - no data received`);
-    }
-    
-    try {
-      if (fs.existsSync(sdpFile)) {
-        fs.unlinkSync(sdpFile);
-      }
-    } catch (err) {
-      console.error(`[FFmpeg] Error cleaning up SDP file: ${err.message}`);
-    }
-  });
-
-  ffmpeg.on("error", (err) => {
-    console.error(`[FFmpeg] Process error: ${err.message}`);
-    try {
-      if (fs.existsSync(sdpFile)) {
-        fs.unlinkSync(sdpFile);
-      }
-    } catch (cleanupErr) {
-      console.error(`[FFmpeg] Error cleaning up SDP file: ${cleanupErr.message}`);
-    }
-  });
-
-  return { ffmpeg };
 }
 
 /**
- * Creates a consumer on PlainTransport and starts recording the producer stream
- * This is the main function that orchestrates the recording process
- * @param {Object} producer - mediasoup producer instance
- * @param {Object} router - mediasoup router instance
- * @param {string} filename - Output filename for recording
- * @returns {Promise<Object>} - Recording session with consumer, transport, and ffmpeg
+ * Start FFmpeg recording process with enhanced error handling
+ */
+async function startFFmpegRecording(session, args) {
+  return new Promise((resolve, reject) => {
+    try {
+      session.ffmpeg = spawn("ffmpeg", args);
+      session.status = 'recording';
+      
+      let ffmpegStarted = false;
+      let rtpDataReceived = false;
+      let hasError = false;
+
+      session.ffmpeg.stderr.on("data", (data) => {
+        const message = data.toString();
+        
+        if (message.includes("Stream mapping:") && !ffmpegStarted) {
+          ffmpegStarted = true;
+          recordLogger.info('FFmpeg recording started', { 
+            producerId: session.producerId,
+            type: session.type 
+          });
+        }
+        
+        if (message.includes("frame=") || message.includes("size=")) {
+          if (!rtpDataReceived) {
+            rtpDataReceived = true;
+            recordLogger.info('FFmpeg receiving data', { 
+              producerId: session.producerId,
+              type: session.type 
+            });
+          }
+        }
+        
+        if (message.toLowerCase().includes("error") || message.toLowerCase().includes("failed")) {
+          if (!hasError) {
+            hasError = true;
+            recordLogger.error('FFmpeg error detected', { 
+              producerId: session.producerId,
+              error: message.trim() 
+            });
+          }
+        }
+      });
+
+      session.ffmpeg.on("close", (code) => {
+        session.status = code === 0 ? 'completed' : 'failed';
+        
+        if (rtpDataReceived) {
+          recordLogger.info('FFmpeg recording completed', { 
+            producerId: session.producerId,
+            exitCode: code,
+            duration: Date.now() - session.createdAt.getTime()
+          });
+        } else {
+          recordLogger.warn('FFmpeg recording stopped - no data received', { 
+            producerId: session.producerId,
+            exitCode: code 
+          });
+        }
+        
+        resolve();
+      });
+
+      session.ffmpeg.on("error", (error) => {
+        session.status = 'error';
+        recordLogger.error('FFmpeg process error', { 
+          producerId: session.producerId,
+          error: error.message 
+        });
+        reject(new RecordingError(`FFmpeg process error: ${error.message}`));
+      });
+
+      // Resolve immediately for async operation
+      resolve();
+      
+    } catch (error) {
+      session.status = 'error';
+      reject(new RecordingError(`Failed to start FFmpeg: ${error.message}`));
+    }
+  });
+}
+
+/**
+ * Create recording session with proper initialization
+ */
+async function createRecordingSession(producer, router, outputPath, type) {
+  const session = new RecordingSession(producer.id, type, outputPath);
+  
+  try {
+    // Ensure output directory exists
+    const outputDir = path.dirname(outputPath);
+    await fs.mkdir(outputDir, { recursive: true });
+
+    // Create transport
+    session.transport = await createRecorderTransport(router);
+    const tuple = session.transport.tuple;
+    
+    if (!tuple?.localIp || !tuple?.localPort) {
+      throw new RecordingError('Transport tuple not available');
+    }
+
+    // Wait for producer to be active
+    await waitForProducerActive(producer);
+
+    // Create consumer
+    session.consumer = await session.transport.consume({
+      producerId: producer.id,
+      rtpCapabilities: router.rtpCapabilities,
+      paused: true,
+      appData: { recording: true, type }
+    });
+
+    recordLogger.info('Consumer created for recording', {
+      consumerId: session.consumer.id,
+      producerId: producer.id,
+      type
+    });
+
+    // Calculate FFmpeg port and verify availability
+    const ffmpegPort = calculateFFmpegPort(tuple.localPort);
+    const portAvailable = await isPortAvailable(ffmpegPort);
+    
+    if (!portAvailable) {
+      throw new RecordingError(`Port ${ffmpegPort} is not available`);
+    }
+
+    // Generate SDP file
+    const payloadType = session.consumer.rtpParameters?.codecs?.[0]?.payloadType || 96;
+    const sdpContent = generateSDPContent(
+      { port: ffmpegPort }, 
+      payloadType, 
+      producer.kind, 
+      type
+    );
+    
+    session.sdpFile = path.join(outputDir, `temp_${Date.now()}.sdp`);
+    await fs.writeFile(session.sdpFile, sdpContent);
+
+    // Generate FFmpeg arguments
+    const args = generateFFmpegArgs(type, producer.kind, outputPath);
+    // Replace the INPUT_PLACEHOLDER with the actual SDP file path
+    const inputIndex = args.indexOf("INPUT_PLACEHOLDER");
+    if (inputIndex !== -1) {
+      args[inputIndex] = session.sdpFile;
+    }
+
+    // Log the final FFmpeg command for debugging
+    recordLogger.info('FFmpeg command', {
+      producerId: producer.id,
+      type,
+      command: `ffmpeg ${args.join(' ')}`
+    });
+
+    // Start FFmpeg process
+    await startFFmpegRecording(session, args);
+
+    // Wait for initialization
+    await new Promise(resolve => setTimeout(resolve, config.timeouts.ffmpegInit));
+
+    // Connect transport to FFmpeg
+    await session.transport.connect({
+      ip: '127.0.0.1',
+      port: ffmpegPort
+    });
+
+    // Wait for connection to stabilize
+    await new Promise(resolve => setTimeout(resolve, config.timeouts.transportStabilize));
+
+    // Resume consumer to start data flow
+    await session.consumer.resume();
+    
+    recordLogger.recording('active', {
+      producerId: producer.id,
+      type,
+      outputPath: path.basename(outputPath)
+    });
+
+    // Set up cleanup handler
+    session.consumer.on('@close', () => {
+      recordLogger.recording('ended', { producerId: producer.id, type });
+      session.cleanup();
+    });
+
+    return session;
+
+  } catch (error) {
+    await session.cleanup();
+    throw error;
+  }
+}
+
+/**
+ * Create screen recording session
  */
 async function createConsumerAndRecord(producer, router, filename) {
   try {
-    console.log(`[Recorder] Starting screen recording: ${path.basename(filename)}`);
-
-    // Create PlainTransport for recording
-    const transport = await createRecorderTransport(router);
-    const tuple = transport.tuple;
+    validateRequired({ producer, router, filename }, ['producer', 'router', 'filename']);
     
-    if (!tuple || !tuple.localIp || !tuple.localPort) {
-      throw new Error('Transport tuple not available');
-    }
-
-    // Wait for producer to be active
-    let producerActive = false;
-    const producerMonitor = setInterval(() => {
-      if (!producer.paused && !producer.closed) {
-        producerActive = true;
-        clearInterval(producerMonitor);
-      }
-    }, 1000);
-    
-    let waitTime = 0;
-    while (!producerActive && waitTime < 10000) {
-      await new Promise(resolve => setTimeout(resolve, 500));
-      waitTime += 500;
-    }
-    
-    clearInterval(producerMonitor);
-    
-    if (!producerActive) {
-      throw new Error('Producer did not become active within timeout');
-    }
-    
-    // Create consumer on PlainTransport
-    const consumer = await transport.consume({
-      producerId: producer.id,
-      rtpCapabilities: router.rtpCapabilities,
-      paused: true,
-      appData: { recording: true }
+    recordLogger.recording('starting', { 
+      type: 'screen',
+      filename: path.basename(filename) 
     });
 
-    console.log(`[Recorder] Consumer created: ${consumer.id}`);
+    const session = await createRecordingSession(
+      producer, 
+      router, 
+      filename, 
+      'screen'
+    );
 
-    // Calculate FFmpeg port
-    let ffmpegPort = tuple.localPort + 10000;
-    if (ffmpegPort > 65535) {
-      ffmpegPort = tuple.localPort + 1000;
-      if (ffmpegPort > 65535) {
-        ffmpegPort = 50000 + (tuple.localPort % 1000);
-      }
-    }
-    
-    // Start FFmpeg recording process
-    const { ffmpeg } = await startFfmpegRecording({
-      rtpParameters: { 
-        ip: tuple.localIp, 
-        port: ffmpegPort
-      },
-      output: filename,
-      kind: producer.kind,
-      consumerRtpParams: consumer.rtpParameters,
-    });
-    
-    // Wait for FFmpeg to initialize
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Connect PlainTransport to FFmpeg
-    await transport.connect({
-      ip: '127.0.0.1',
-      port: ffmpegPort
-    });
-    
-    // Wait for connection to stabilize
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    // Resume consumer to start data flow
-    await consumer.resume();
-    console.log(`[Recorder] Recording active: ${path.basename(filename)}`);
-
-    // Clean up when consumer closes
-    consumer.on('@close', () => {
-      console.log(`[Recorder] Recording ended: ${path.basename(filename)}`);
-      if (ffmpeg && !ffmpeg.killed) {
-        ffmpeg.kill('SIGTERM');
-      }
-    });
-
-    return { consumer, transport, ffmpeg };
+    return session;
   } catch (error) {
-    console.error('[Recorder] Error:', error.message);
-    throw error;
+    recordLogger.error('Screen recording error', { error: error.message });
+    throw new RecordingError(`Screen recording failed: ${error.message}`);
   }
 }
 
 /**
- * Creates a consumer on PlainTransport and starts capturing webcam frames (1 frame per second as JPEG images)
- * @param {Object} producer - mediasoup producer instance (webcam video)
- * @param {Object} router - mediasoup router instance
- * @param {string} userId - User ID for filename
- * @returns {Promise<Object>} - Recording session with consumer, transport, and ffmpeg
+ * Create webcam frame capture session
  */
 async function createWebcamRecording(producer, router, userId) {
   try {
-    console.log(`[Recorder] Starting webcam frame capture for user: ${userId}`);
-
-    // Create PlainTransport for recording
-    const transport = await createRecorderTransport(router);
-    const tuple = transport.tuple;
+    validateRequired({ producer, router, userId }, ['producer', 'router', 'userId']);
     
-    if (!tuple || !tuple.localIp || !tuple.localPort) {
-      throw new Error('Transport tuple not available');
-    }
-
-    // Wait for producer to be active
-    let producerActive = false;
-    const producerMonitor = setInterval(() => {
-      if (!producer.paused && !producer.closed) {
-        producerActive = true;
-        clearInterval(producerMonitor);
-      }
-    }, 1000);
+    const outputFile = path.join(config.recording.basePath, 'webcam', `${userId}_frame.jpg`);
     
-    let waitTime = 0;
-    while (!producerActive && waitTime < 10000) {
-      await new Promise(resolve => setTimeout(resolve, 500));
-      waitTime += 500;
-    }
-    
-    clearInterval(producerMonitor);
-    
-    if (!producerActive) {
-      throw new Error('Producer did not become active within timeout');
-    }
-    
-    // Create consumer on PlainTransport
-    const consumer = await transport.consume({
-      producerId: producer.id,
-      rtpCapabilities: router.rtpCapabilities,
-      paused: true,
-      appData: { recording: true, type: 'webcam' }
+    recordLogger.recording('starting', { 
+      type: 'webcam',
+      userId,
+      filename: path.basename(outputFile) 
     });
 
-    console.log(`[Recorder] Webcam consumer created: ${consumer.id}`);
+    const session = await createRecordingSession(
+      producer, 
+      router, 
+      outputFile, 
+      'webcam'
+    );
 
-    // Calculate FFmpeg port
-    let ffmpegPort = tuple.localPort + 10000;
-    if (ffmpegPort > 65535) {
-      ffmpegPort = tuple.localPort + 1000;
-      if (ffmpegPort > 65535) {
-        ffmpegPort = 50000 + (tuple.localPort % 1000);
-      }
-    }
-    
-    // Create output pattern for frame files
-    const outputPattern = `recordings/webcam/${userId}_frame_%d.jpg`;
-    
-    // Start FFmpeg recording process for webcam (1 FPS frame capture)
-    const { ffmpeg } = await startFfmpegRecording({
-      rtpParameters: { 
-        ip: tuple.localIp, 
-        port: ffmpegPort
-      },
-      output: outputPattern,
-      kind: producer.kind,
-      consumerRtpParams: consumer.rtpParameters,
-      recordingType: 'webcam'
-    });
-    
-    // Wait for FFmpeg to initialize
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Connect PlainTransport to FFmpeg
-    await transport.connect({
-      ip: '127.0.0.1',
-      port: ffmpegPort
-    });
-    
-    // Wait for connection to stabilize
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    // Resume consumer to start data flow
-    await consumer.resume();
-    console.log(`[Recorder] Webcam frame capture active for user: ${userId}`);
-
-    // Start face analysis for captured frames
-    const frameCaptureLoop = setInterval(async () => {
-      try {
-        const webcamDir = `recordings/webcam`;
-        
-        // Check if webcam directory exists
-        if (!fs.existsSync(webcamDir)) {
-          return;
-        }
-        
-        // Look for frame files with the user's pattern
-        const files = fs.readdirSync(webcamDir);
-        const userFrames = files.filter(file => 
-          file.startsWith(`${userId}_frame_`) && file.endsWith('.jpg')
-        );
-        
-        if (userFrames.length > 0) {
-          // Get the most recent frame
-          const latestFrame = userFrames.sort().pop();
-          const framePath = path.join(webcamDir, latestFrame);
-          
-          console.log(`[Recorder] Found frame: ${latestFrame}`);
-          
-          // Send frame for face analysis
-          await faceAnalysisService.startAnalysis(userId, framePath);
-        }
-      } catch (error) {
-        console.error(`[Recorder] Frame capture error for user ${userId}:`, error.message);
-      }
-    }, 5000); // Check for frames every 5 seconds
-
-    // Clean up when consumer closes
-    consumer.on('@close', () => {
-      console.log(`[Recorder] Webcam frame capture ended for user: ${userId}`);
-      
-      // Stop face analysis
-      faceAnalysisService.stopAnalysis(userId);
-      
-      // Clear frame capture interval
-      clearInterval(frameCaptureLoop);
-      
-      if (ffmpeg && !ffmpeg.killed) {
-        ffmpeg.kill('SIGTERM');
-      }
-    });
-
-    return { consumer, transport, ffmpeg, frameCaptureLoop };
+    return session;
   } catch (error) {
-    console.error('[Recorder] Webcam frame capture error:', error.message);
-    throw error;
+    recordLogger.error('Webcam recording error', { error: error.message });
+    throw new RecordingError(`Webcam recording failed: ${error.message}`);
   }
 }
 
 /**
- * Creates a consumer on PlainTransport and starts recording audio (10-second segments)
- * @param {Object} producer - mediasoup producer instance (microphone audio)
- * @param {Object} router - mediasoup router instance
- * @param {string} userId - User ID for filename
- * @returns {Promise<Object>} - Recording session with consumer, transport, and ffmpeg
+ * Create audio recording session
  */
 async function createAudioRecording(producer, router, userId) {
   try {
-    const outputPattern = `recordings/audio/${userId}_audio_%d.mp3`;
+    validateRequired({ producer, router, userId }, ['producer', 'router', 'userId']);
     
-    console.log(`[Recorder] Starting audio recording: ${path.basename(outputPattern)}`);
-
-    // Create PlainTransport for recording
-    const transport = await createRecorderTransport(router);
-    const tuple = transport.tuple;
+    const outputFile = path.join(config.recording.basePath, 'audio', `${userId}_audio.mp3`);
     
-    if (!tuple || !tuple.localIp || !tuple.localPort) {
-      throw new Error('Transport tuple not available');
-    }
-
-    // Wait for producer to be active
-    let producerActive = false;
-    const producerMonitor = setInterval(() => {
-      if (!producer.paused && !producer.closed) {
-        producerActive = true;
-        clearInterval(producerMonitor);
-      }
-    }, 1000);
-    
-    let waitTime = 0;
-    while (!producerActive && waitTime < 10000) {
-      await new Promise(resolve => setTimeout(resolve, 500));
-      waitTime += 500;
-    }
-    
-    clearInterval(producerMonitor);
-    
-    if (!producerActive) {
-      throw new Error('Producer did not become active within timeout');
-    }
-    
-    // Create consumer on PlainTransport
-    const consumer = await transport.consume({
-      producerId: producer.id,
-      rtpCapabilities: router.rtpCapabilities,
-      paused: true,
-      appData: { recording: true, type: 'audio' }
+    recordLogger.recording('starting', { 
+      type: 'audio',
+      userId,
+      filename: path.basename(outputFile) 
     });
 
-    console.log(`[Recorder] Audio consumer created: ${consumer.id}`);
+    const session = await createRecordingSession(
+      producer, 
+      router, 
+      outputFile, 
+      'audio'
+    );
 
-    // Calculate FFmpeg port
-    let ffmpegPort = tuple.localPort + 10000;
-    if (ffmpegPort > 65535) {
-      ffmpegPort = tuple.localPort + 1000;
-      if (ffmpegPort > 65535) {
-        ffmpegPort = 50000 + (tuple.localPort % 1000);
-      }
-    }
-    
-    // Start FFmpeg recording process for audio (10-second segments)
-    const { ffmpeg } = await startFfmpegRecording({
-      rtpParameters: { 
-        ip: tuple.localIp, 
-        port: ffmpegPort
-      },
-      output: outputPattern,
-      kind: producer.kind,
-      consumerRtpParams: consumer.rtpParameters,
-      recordingType: 'audio'
-    });
-    
-    // Wait for FFmpeg to initialize
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Connect PlainTransport to FFmpeg
-    await transport.connect({
-      ip: '127.0.0.1',
-      port: ffmpegPort
-    });
-    
-    // Wait for connection to stabilize
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    // Resume consumer to start data flow
-    await consumer.resume();
-    console.log(`[Recorder] Audio recording active: ${path.basename(outputPattern)}`);
-
-    // Clean up when consumer closes
-    consumer.on('@close', () => {
-      console.log(`[Recorder] Audio recording ended: ${path.basename(outputPattern)}`);
-      if (ffmpeg && !ffmpeg.killed) {
-        ffmpeg.kill('SIGTERM');
-      }
-    });
-
-    return { consumer, transport, ffmpeg, filename: outputPattern };
+    return session;
   } catch (error) {
-    console.error('[Recorder] Audio recording error:', error.message);
-    throw error;
+    recordLogger.error('Audio recording error', { error: error.message });
+    throw new RecordingError(`Audio recording failed: ${error.message}`);
   }
 }
 
 module.exports = {
   createRecorderTransport,
-  startFfmpegRecording,
+  startFFmpegRecording,
   createConsumerAndRecord,
   createWebcamRecording,
   createAudioRecording,
+  RecordingSession,
 };
