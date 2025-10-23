@@ -25,7 +25,7 @@ const config = {
     listenIps: [
       { 
         ip: process.env.WEBRTC_LISTEN_IP || '0.0.0.0', 
-        announcedIp: process.env.WEBRTC_ANNOUNCED_IP || '192.168.137.89' 
+        announcedIp: process.env.WEBRTC_ANNOUNCED_IP || '192.168.1.3' 
       }
     ],
     enableUdp: true,
