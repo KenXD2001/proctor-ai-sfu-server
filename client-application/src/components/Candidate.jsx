@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
 import * as mediasoupClient from 'mediasoup-client';
+import config from '../config';
 
 const Candidate = ({ user, onLogout }) => {
   const [socket, setSocket] = useState(null);
@@ -24,7 +25,7 @@ const Candidate = ({ user, onLogout }) => {
 
   // Debug streams state changes
   useEffect(() => {
-    console.log('📊 Streams state changed:', {
+    console.log('Streams state changed:', {
       screen: streams.screen ? { id: streams.screen.id, tracks: streams.screen.getTracks().length } : null,
       webcam: streams.webcam ? { id: streams.webcam.id, tracks: streams.webcam.getTracks().length } : null,
       mic: streams.mic ? { id: streams.mic.id, tracks: streams.mic.getTracks().length } : null
@@ -36,71 +37,61 @@ const Candidate = ({ user, onLogout }) => {
   const screenVideoRef = useRef(null);
   const webcamVideoRef = useRef(null);
   const socketInitializedRef = useRef(false);
+  const sendTransportRef = useRef(null);
+  const socketRef = useRef(null);
+  const streamsStartedRef = useRef(false);
 
   useEffect(() => {
+    // Check if socket already exists and is connected
+    if (socketRef.current && socketRef.current.connected) {
+      console.log('Socket already exists and connected, skipping initialization');
+      setSocket(socketRef.current);
+      return;
+    }
+    
+    // Check if we're already in the process of initializing
     if (socketInitializedRef.current) {
-      console.log('Socket already initialized, skipping...');
+      console.log('Socket initialization already in progress, skipping...');
       return;
     }
     
     console.log('Candidate component mounted, initializing socket...');
     socketInitializedRef.current = true;
-    initializeSocket();
-    
-    // Cleanup function
-    return () => {
-      console.log('Cleaning up socket connection...');
-      if (socket) {
-        socket.disconnect();
-        console.log('Socket disconnected');
-      }
-      socketInitializedRef.current = false;
-    };
-  }, []);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      if (socket) {
-        socket.disconnect();
-      }
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-    };
-  }, [socket]);
-
-  // This useEffect is no longer needed since we join room immediately on connect
-
-  const initializeSocket = () => {
-    if (socket) {
-      console.log('Socket already exists, not creating new one');
-      return;
-    }
     
     console.log('Initializing socket with user:', user);
+    console.log('Connecting to server URL:', config.serverUrl);
     try {
-      const newSocket = io('http://192.168.1.3:3000', {
+      const newSocket = io(config.serverUrl, {
         auth: {
           token: user.token
         },
-        forceNew: true // Force new connection
+        forceNew: true, // Force new connection
+        reconnection: true,
+        reconnectionDelay: 1000,
+        reconnectionAttempts: 5
       });
 
+      // Store socket in ref immediately for cleanup and checks
+      socketRef.current = newSocket;
+      console.log('Socket.IO instance created, waiting for connection...');
+      
       newSocket.on('connect', () => {
-        console.log('🔗 Connected to server with socket ID:', newSocket.id);
+        console.log('Connected to server with socket ID:', newSocket.id);
         setSocket(newSocket);
         setConnectionStatus('connected');
         
         // Join room immediately after connection
-        console.log('🚪 Socket connected, joining room...');
+        console.log('Socket connected, joining room...');
         newSocket.emit('join-room', {
           roomId: user.examRoomId,
           role: 'student'
         });
-        console.log('✅ Join room event emitted for room:', user.examRoomId);
+        console.log('Join room event emitted for room:', user.examRoomId);
+      });
+      
+      // Log connection attempts
+      newSocket.on('connect_attempt', () => {
+        console.log('Attempting to connect to server...');
       });
 
       newSocket.on('disconnect', () => {
@@ -109,8 +100,8 @@ const Candidate = ({ user, onLogout }) => {
       });
 
       newSocket.on('router-rtp-capabilities', async (rtpCapabilities) => {
-        console.log('📡 Received router RTP capabilities from server');
-        console.log('📊 RTP Capabilities:', {
+        console.log('Received router RTP capabilities from server');
+        console.log('RTP Capabilities:', {
           codecs: rtpCapabilities.codecs?.length,
           headerExtensions: rtpCapabilities.headerExtensions?.length
         });
@@ -118,38 +109,81 @@ const Candidate = ({ user, onLogout }) => {
       });
 
       newSocket.on('existing-producers', (producers) => {
-        console.log('📋 Received existing producers:', producers);
-        console.log('📊 Producer count:', producers.length);
+        console.log('Received existing producers:', producers);
+        console.log('Producer count:', producers.length);
       });
 
       newSocket.on('connect_error', (error) => {
-        console.log('Connection error:', error);
-        // Continue with local functionality even if server is not available
+        console.error('Connection error:', error.message || error);
+        console.error('Connection error details:', {
+          message: error.message,
+          type: error.type,
+          description: error.description
+        });
+        setConnectionStatus('disconnected');
       });
 
+      // Set socket in state immediately (even if not connected yet)
       setSocket(newSocket);
     } catch (error) {
       console.error('Failed to initialize socket:', error);
-      // Continue with local functionality
+      socketInitializedRef.current = false; // Reset on error to allow retry
+      setConnectionStatus('disconnected');
     }
-  };
+    
+    // Cleanup function
+    return () => {
+      console.log('Cleaning up socket connection...');
+      // Use ref for reliable cleanup
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+        console.log('Socket disconnected');
+      }
+      // Clean up transport ref
+      if (sendTransportRef.current) {
+        sendTransportRef.current.close();
+        sendTransportRef.current = null;
+      }
+      // Reset streams started flag
+      streamsStartedRef.current = false;
+      socketInitializedRef.current = false;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, []);
+
+  // Socket initialization is now handled in the useEffect above
 
   const initializeMediasoup = async (rtpCapabilities) => {
     try {
-      console.log('🔧 Initializing MediaSoup device...');
+      console.log('Initializing MediaSoup device...');
       const newDevice = new mediasoupClient.Device();
-      console.log('📱 MediaSoup device created');
+      console.log('MediaSoup device created');
       
       await newDevice.load({ routerRtpCapabilities: rtpCapabilities });
-      console.log('✅ MediaSoup device loaded successfully');
+      console.log('MediaSoup device loaded successfully');
       
       setDevice(newDevice);
-      console.log('🎉 MediaSoup device initialized and set in state');
+      console.log('MediaSoup device initialized and set in state');
       
       // Room is already joined when socket connected, no need to join again
     } catch (error) {
-      console.error('❌ Failed to initialize mediasoup device:', error);
-      console.error('❌ Error details:', {
+      console.error('Failed to initialize mediasoup device:', error);
+      console.error('Error details:', {
         message: error.message,
         stack: error.stack
       });
@@ -169,7 +203,7 @@ const Candidate = ({ user, onLogout }) => {
       console.log('Microphone access granted');
       console.log('Mic stream tracks:', micStream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled, readyState: t.readyState })));
       setStreams(prev => {
-        console.log('🎤 Setting mic stream in state:', { streamId: micStream.id, tracks: micStream.getTracks().length });
+        console.log('Setting mic stream in state:', { streamId: micStream.id, tracks: micStream.getTracks().length });
         return { ...prev, mic: micStream };
       });
       setPermissions(prev => ({ ...prev, mic: true }));
@@ -183,7 +217,7 @@ const Candidate = ({ user, onLogout }) => {
       console.log('Webcam access granted');
       console.log('Webcam stream tracks:', webcamStream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled, readyState: t.readyState })));
       setStreams(prev => {
-        console.log('📹 Setting webcam stream in state:', { streamId: webcamStream.id, tracks: webcamStream.getTracks().length });
+        console.log('Setting webcam stream in state:', { streamId: webcamStream.id, tracks: webcamStream.getTracks().length });
         return { ...prev, webcam: webcamStream };
       });
       setPermissions(prev => ({ ...prev, webcam: true }));
@@ -210,7 +244,7 @@ const Candidate = ({ user, onLogout }) => {
       console.log('Screen share access granted');
       console.log('Screen stream tracks:', screenStream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled, readyState: t.readyState })));
       setStreams(prev => {
-        console.log('🖥️ Setting screen stream in state:', { streamId: screenStream.id, tracks: screenStream.getTracks().length });
+        console.log('Setting screen stream in state:', { streamId: screenStream.id, tracks: screenStream.getTracks().length });
         return { ...prev, screen: screenStream };
       });
       setPermissions(prev => ({ ...prev, screen: true }));
@@ -235,32 +269,32 @@ const Candidate = ({ user, onLogout }) => {
 
   const createSendTransport = async () => {
     if (!socket || !device) {
-      console.error('❌ Cannot create transport:', { socket: !!socket, device: !!device });
+      console.error('Cannot create transport:', { socket: !!socket, device: !!device });
       return;
     }
 
-    console.log('🚀 Creating send transport...');
+    console.log('Creating send transport...');
     return new Promise((resolve, reject) => {
       socket.emit('create-transport', { direction: 'send' }, async (data) => {
         try {
-          console.log('✅ Received transport data from server:', data);
+          console.log('Received transport data from server:', data);
           const transport = device.createSendTransport(data);
-          console.log('✅ Send transport created with ID:', transport.id);
+          console.log('Send transport created with ID:', transport.id);
           
-          transport.on('connect', ({ dtlsParameters }, callback, errback) => {
-            console.log('🔗 Transport connect event triggered, dtlsParameters:', dtlsParameters);
+          transport.on('connect', ({ dtlsParameters }, callback) => {
+            console.log('Transport connect event triggered, dtlsParameters:', dtlsParameters);
             socket.emit('connect-transport', {
               transportId: transport.id,
               dtlsParameters
             }, (response) => {
-              console.log('🔗 Transport connect response:', response);
+              console.log('Transport connect response:', response);
               callback();
             });
           });
 
-          transport.on('produce', async ({ kind, rtpParameters, appData }, callback, _errback) => {
+          transport.on('produce', async ({ kind, rtpParameters, appData }, callback, errback) => {
             try {
-              console.log('📤 Transport produce event triggered:', {
+              console.log('Transport produce event triggered:', {
                 kind,
                 appData,
                 rtpParameters: {
@@ -277,17 +311,17 @@ const Candidate = ({ user, onLogout }) => {
                 appData
               }, ({ id, error }) => {
                 if (error) {
-                  console.error('❌ Produce error from server:', error);
+                  console.error('Produce error from server:', error);
                   if (errback) {
                     errback(new Error(error));
                   }
                 } else {
-                  console.log('✅ Producer created successfully with ID:', id);
+                  console.log('Producer created successfully with ID:', id);
                   callback({ id });
                 }
               });
             } catch (error) {
-              console.error('❌ Error in transport produce handler:', error);
+              console.error('Error in transport produce handler:', error);
               if (errback) {
                 errback(error);
               }
@@ -295,28 +329,29 @@ const Candidate = ({ user, onLogout }) => {
           });
 
           transport.on('connecterror', (error) => {
-            console.error('❌ Transport connect error:', error);
+            console.error('Transport connect error:', error);
           });
 
           resolve(transport);
         } catch (error) {
-          console.error('❌ Error creating send transport:', error);
+          console.error('Error creating send transport:', error);
           reject(error);
         }
       });
     });
   };
 
-  const startProducing = async (stream, kind, type) => {
-    if (!device || !sendTransport) {
-      console.error(`❌ Cannot produce ${type} stream:`, { device: !!device, sendTransport: !!sendTransport });
+  const startProducing = async (stream, kind, type, transport = null) => {
+    const currentTransport = transport || sendTransportRef.current || sendTransport;
+    if (!device || !currentTransport) {
+      console.error(`Cannot produce ${type} stream:`, { device: !!device, sendTransport: !!currentTransport });
       return;
     }
 
-    console.log(`🎬 Starting to produce ${type} stream (${kind})`);
+    console.log(`Starting to produce ${type} stream (${kind})`);
     
     try {
-      console.log(`📊 Stream details for ${type}:`, {
+      console.log(`Stream details for ${type}:`, {
         streamId: stream.id,
         active: stream.active,
         tracks: stream.getTracks().length
@@ -324,13 +359,13 @@ const Candidate = ({ user, onLogout }) => {
 
       const track = stream.getTracks().find(t => t.kind === kind);
       if (!track) {
-        console.error(`❌ No ${kind} track found in stream`);
+        console.error(`No ${kind} track found in stream`);
         console.log(`Available tracks:`, stream.getTracks().map(t => t.kind));
         return;
       }
 
-      console.log(`✅ Found ${kind} track, creating producer...`);
-      console.log(`📊 Track details for ${type}:`, {
+      console.log(`Found ${kind} track, creating producer...`);
+      console.log(`Track details for ${type}:`, {
         kind: track.kind,
         enabled: track.enabled,
         readyState: track.readyState,
@@ -341,18 +376,18 @@ const Candidate = ({ user, onLogout }) => {
 
       // Ensure the track is enabled before producing
       if (!track.enabled) {
-        console.log(`🔧 Enabling track for ${type}...`);
+        console.log(`Enabling track for ${type}...`);
         track.enabled = true;
       }
 
-      console.log(`📤 Creating producer for ${type} with appData:`, { type, source: type });
+      console.log(`Creating producer for ${type} with appData:`, { type, source: type });
       
-      const producer = await sendTransport.produce({
+      const producer = await currentTransport.produce({
         track,
         appData: { type, source: type }
       });
 
-      console.log(`✅ Producer created successfully for ${type}:`, {
+      console.log(`Producer created successfully for ${type}:`, {
         producerId: producer.id,
         kind: producer.kind,
         paused: producer.paused,
@@ -364,24 +399,24 @@ const Candidate = ({ user, onLogout }) => {
         [type]: producer
       }));
 
-      console.log(`🎉 Successfully started producing ${type} stream with producer ID: ${producer.id}`);
+      console.log(`Successfully started producing ${type} stream with producer ID: ${producer.id}`);
       
       // Add producer event listeners for debugging
       producer.on('trackended', () => {
-        console.log(`⚠️ Track ended for ${type} producer`);
+        console.log(`Track ended for ${type} producer`);
       });
       
       producer.on('transportclose', () => {
-        console.log(`⚠️ Transport closed for ${type} producer`);
+        console.log(`Transport closed for ${type} producer`);
       });
 
       producer.on('@close', () => {
-        console.log(`⚠️ Producer closed for ${type}`);
+        console.log(`Producer closed for ${type}`);
       });
       
     } catch (error) {
-      console.error(`❌ Failed to produce ${type} stream:`, error);
-      console.error(`❌ Error details:`, {
+      console.error(`Failed to produce ${type} stream:`, error);
+      console.error(`Error details:`, {
         message: error.message,
         stack: error.stack,
         type,
@@ -390,59 +425,63 @@ const Candidate = ({ user, onLogout }) => {
     }
   };
 
-  const startAllStreams = async () => {
-    console.log('🚀 Starting all streams...');
+  const startAllStreams = async (transport = null) => {
+    console.log('Starting all streams...');
     
-    if (!sendTransport) {
-      console.error('❌ No send transport available, waiting for transport to be created...');
+    // Use provided transport or ref, fallback to state
+    const currentTransport = transport || sendTransportRef.current || sendTransport;
+    
+    if (!currentTransport) {
+      console.error('No send transport available, waiting for transport to be created...');
       // Wait a bit and try again
       setTimeout(() => {
-        if (sendTransport) {
-          console.log('🔄 Retrying startAllStreams...');
-          startAllStreams();
+        const retryTransport = sendTransportRef.current || sendTransport;
+        if (retryTransport) {
+          console.log('Retrying startAllStreams...');
+          startAllStreams(retryTransport);
         } else {
-          console.error('❌ Send transport still not available after timeout');
+          console.error('Send transport still not available after timeout');
         }
-      }, 1000);
+      }, 500);
       return;
     }
 
-    console.log('📊 Current streams state:', {
+    console.log('Current streams state:', {
       screen: !!streams.screen,
       webcam: !!streams.webcam,
       mic: !!streams.mic,
-      sendTransport: !!sendTransport
+      sendTransport: !!currentTransport
     });
 
     // Start screen share
     if (streams.screen) {
-      console.log('🖥️ Starting screen share production...');
-      await startProducing(streams.screen, 'video', 'screen');
+      console.log('Starting screen share production...');
+      await startProducing(streams.screen, 'video', 'screen', currentTransport);
     } else {
-      console.log('⚠️ No screen stream available');
+      console.log('No screen stream available');
     }
 
     // Start webcam
     if (streams.webcam) {
-      console.log('📹 Starting webcam production...');
-      await startProducing(streams.webcam, 'video', 'webcam');
+      console.log('Starting webcam production...');
+      await startProducing(streams.webcam, 'video', 'webcam', currentTransport);
     } else {
-      console.log('⚠️ No webcam stream available');
+      console.log('No webcam stream available');
     }
 
     // Start microphone
     if (streams.mic) {
-      console.log('🎤 Starting microphone production...');
-      await startProducing(streams.mic, 'audio', 'mic');
+      console.log('Starting microphone production...');
+      await startProducing(streams.mic, 'audio', 'mic', currentTransport);
     } else {
-      console.log('⚠️ No microphone stream available');
+      console.log('No microphone stream available');
     }
 
-    console.log('✅ All streams production attempted');
+    console.log('All streams production attempted');
     
     // Log final state
     setTimeout(() => {
-      console.log('📊 Final State Summary:', {
+      console.log('Final State Summary:', {
         device: !!device,
         socket: !!socket,
         sendTransport: !!sendTransport,
@@ -461,7 +500,7 @@ const Candidate = ({ user, onLogout }) => {
   };
 
   useEffect(() => {
-    console.log('🔄 useEffect triggered for stream creation:', {
+    console.log('useEffect triggered for stream creation:', {
       currentStep,
       device: !!device,
       socket: !!socket,
@@ -472,32 +511,41 @@ const Candidate = ({ user, onLogout }) => {
       }
     });
 
-    if (currentStep === 'ready' && device && socket) {
-      console.log('✅ Ready to start streams, creating transport...');
-      console.log('📊 Current streams available:', { 
+    if (currentStep === 'ready' && device && socket && !sendTransportRef.current && !streamsStartedRef.current) {
+      console.log('Ready to start streams, creating transport...');
+      console.log('Current streams available:', { 
         webcam: !!streams.webcam, 
         screen: !!streams.screen, 
         mic: !!streams.mic 
       });
+      streamsStartedRef.current = true; // Mark as started to prevent duplicate calls
       createSendTransport().then(transport => {
         console.log('🚀 Transport created, setting sendTransport and starting streams...');
+        // Store in both ref and state
+        sendTransportRef.current = transport;
         setSendTransport(transport);
-        startAllStreams();
+        // Start streams immediately with the transport object
+        startAllStreams(transport);
+      }).catch(error => {
+        console.error('Failed to create transport:', error);
+        streamsStartedRef.current = false; // Reset on error to allow retry
       });
+    } else if (currentStep === 'ready' && device && socket && sendTransportRef.current && !streamsStartedRef.current) {
+      // If transport exists but streams haven't started, start them
+      console.log('Transport exists but streams not started, starting streams...');
+      streamsStartedRef.current = true;
+      startAllStreams(sendTransportRef.current);
     } else {
-      console.log('❌ Not ready to start streams:', { 
+      console.log('Not ready to start streams:', { 
         currentStep, 
         device: !!device, 
-        socket: !!socket 
+        socket: !!socket,
+        transport: !!sendTransportRef.current,
+        streamsStarted: streamsStartedRef.current
       });
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentStep, device, socket, streams.webcam, streams.screen, streams.mic]);
-
-  useEffect(() => {
-    if (sendTransport && currentStep === 'ready') {
-      startAllStreams();
-    }
-  }, [sendTransport, currentStep]);
 
   // Set video elements when streams are available
   useEffect(() => {
@@ -608,8 +656,16 @@ const Candidate = ({ user, onLogout }) => {
       }
     });
 
-    if (socket) {
-      socket.disconnect();
+    // Clean up transport
+    if (sendTransportRef.current) {
+      sendTransportRef.current.close();
+      sendTransportRef.current = null;
+    }
+
+    // Clean up socket
+    if (socketRef.current) {
+      socketRef.current.disconnect();
+      socketRef.current = null;
     }
 
     onLogout();
@@ -669,26 +725,6 @@ const Candidate = ({ user, onLogout }) => {
             You can see your previews below.
           </p>
           
-          {/* Debug information */}
-          <div style={{ 
-            background: '#f0f0f0', 
-            padding: '10px', 
-            margin: '10px 0', 
-            borderRadius: '5px',
-            fontSize: '12px',
-            fontFamily: 'monospace'
-          }}>
-            <div><strong>Debug Info:</strong></div>
-            <div>Device: {device ? 'Connected' : 'Not connected'}</div>
-            <div>Socket: {socket ? 'Connected' : 'Not connected'}</div>
-            <div>Send Transport: {sendTransport ? 'Created' : 'Not created'}</div>
-            <div>Streams: Screen={streams.screen ? `${streams.screen.getTracks().length} tracks` : 'None'}, 
-                        Webcam={streams.webcam ? `${streams.webcam.getTracks().length} tracks` : 'None'}, 
-                        Mic={streams.mic ? `${streams.mic.getTracks().length} tracks` : 'None'}</div>
-            <div>Producers: Screen={producers.screen ? 'Active' : 'Inactive'}, 
-                          Webcam={producers.webcam ? 'Active' : 'Inactive'}, 
-                          Mic={producers.mic ? 'Active' : 'Inactive'}</div>
-          </div>
           
           <div className="preview-container">
             <div className="preview-video">
@@ -707,7 +743,7 @@ const Candidate = ({ user, onLogout }) => {
               />
               <div className="video-label">
                 <span className={`status-indicator ${permissions.screen ? 'active' : 'inactive'}`}></span>
-                Screen Share {streams.screen ? `(${streams.screen.getTracks().length} tracks)` : '(No stream)'}
+                Screen Share
               </div>
             </div>
             
@@ -727,7 +763,7 @@ const Candidate = ({ user, onLogout }) => {
               />
               <div className="video-label">
                 <span className={`status-indicator ${permissions.webcam ? 'active' : 'inactive'}`}></span>
-                Webcam {streams.webcam ? `(${streams.webcam.getTracks().length} tracks)` : '(No stream)'}
+                Webcam
               </div>
             </div>
           </div>

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { SignJWT } from 'jose';
+import config from '../config';
 
 const Login = ({ onLogin }) => {
   const [selectedRole, setSelectedRole] = useState('');
@@ -28,7 +29,7 @@ const Login = ({ onLogin }) => {
 
     try {
       // Generate JWT token with user data using jose
-      const secret = new TextEncoder().encode('supersecret');
+      const secret = new TextEncoder().encode(config.jwtSecret);
       const token = await new SignJWT({
         user_id: username,
         role: selectedRole,
@@ -70,14 +71,14 @@ const Login = ({ onLogin }) => {
               className={`role-option ${selectedRole === 'student' ? 'selected' : ''}`}
               onClick={() => handleRoleSelect('student')}
             >
-              <h3>🎓 Student</h3>
+              <h3>Student</h3>
               <p>Take the exam</p>
             </div>
             <div
               className={`role-option ${selectedRole === 'invigilator' ? 'selected' : ''}`}
               onClick={() => handleRoleSelect('invigilator')}
             >
-              <h3>👨‍🏫 Invigilator</h3>
+              <h3>Invigilator</h3>
               <p>Monitor students</p>
             </div>
           </div>

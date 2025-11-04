@@ -3,6 +3,9 @@
  * Optimized Express server with Socket.IO and MediaSoup integration
  */
 
+// Load environment variables first
+require('dotenv').config();
+
 const express = require("express");
 const http = require("http");
 const cors = require("cors");

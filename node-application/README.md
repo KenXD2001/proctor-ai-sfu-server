@@ -47,7 +47,7 @@ JWT_SECRET=your-secret-key
 
 # WebRTC Configuration
 WEBRTC_LISTEN_IP=0.0.0.0
-WEBRTC_ANNOUNCED_IP=192.168.1.3
+WEBRTC_ANNOUNCED_IP=10.5.49.227
 
 # MediaSoup Configuration
 MEDIASOUP_LOG_LEVEL=warn

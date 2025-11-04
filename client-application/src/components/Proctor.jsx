@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
 import * as mediasoupClient from 'mediasoup-client';
+import config from '../config';
 
 const Proctor = ({ user, onLogout }) => {
   const [socket, setSocket] = useState(null);
@@ -126,7 +127,7 @@ const Proctor = ({ user, onLogout }) => {
 
   useEffect(() => {
     if (streams.mic && micAudioRef.current) {
-      console.log('🎵 Audio stream useEffect triggered:', {
+      console.log('Audio stream useEffect triggered:', {
         streamId: streams.mic.id,
         active: streams.mic.active,
         tracks: streams.mic.getTracks().length,
@@ -140,25 +141,25 @@ const Proctor = ({ user, onLogout }) => {
       });
 
       micAudioRef.current.srcObject = streams.mic;
-      console.log('🎵 Audio stream set to audio element via useEffect, tracks:', streams.mic.getTracks().length);
+      console.log('Audio stream set to audio element via useEffect, tracks:', streams.mic.getTracks().length);
       
       // Force play audio with better debugging
       setTimeout(() => {
         if (micAudioRef.current) {
-          console.log('🔊 useEffect: Attempting to play audio element...');
+          console.log('useEffect: Attempting to play audio element...');
           micAudioRef.current.play()
             .then(() => {
-              console.log('✅ useEffect: Audio element playing successfully');
+              console.log('useEffect: Audio element playing successfully');
             })
             .catch((error) => {
-              console.error('❌ useEffect: Failed to play audio element:', error);
+              console.error('useEffect: Failed to play audio element:', error);
             });
         }
       }, 200);
     } else if (streams.mic && !micAudioRef.current) {
-      console.error('❌ Audio stream available but audio element reference not available');
+      console.error('Audio stream available but audio element reference not available');
     } else {
-      console.log('ℹ️ No audio stream available for useEffect');
+      console.log('No audio stream available for useEffect');
     }
   }, [streams.mic]);
 
@@ -169,7 +170,7 @@ const Proctor = ({ user, onLogout }) => {
     }
     
     try {
-      const newSocket = io('http://192.168.1.3:3000', {
+      const newSocket = io(config.serverUrl, {
         auth: {
           token: user.token
         },
@@ -326,7 +327,7 @@ const Proctor = ({ user, onLogout }) => {
         'consume',
         { producerId, rtpCapabilities: device.rtpCapabilities },
         async ({ id, kind, rtpParameters }) => {
-          console.log(`🛒 Creating consumer for ${type}:`, {
+          console.log(`Creating consumer for ${type}:`, {
             id,
             kind,
             producerId,
@@ -344,7 +345,7 @@ const Proctor = ({ user, onLogout }) => {
             rtpParameters,
           });
 
-          console.log(`✅ Consumer created for ${type}:`, { 
+          console.log(`Consumer created for ${type}:`, { 
             id: consumer.id, 
             kind: consumer.kind, 
             paused: consumer.paused,
@@ -391,7 +392,7 @@ const Proctor = ({ user, onLogout }) => {
             const stream = new MediaStream([consumer.track]);
             setStreams(prev => ({ ...prev, mic: stream }));
             
-            console.log('🎤 Audio stream created for mic:', {
+            console.log('Audio stream created for mic:', {
               streamId: stream.id,
               active: stream.active,
               tracks: stream.getTracks().length,
@@ -406,18 +407,18 @@ const Proctor = ({ user, onLogout }) => {
             
             if (micAudioRef.current) {
               micAudioRef.current.srcObject = stream;
-              console.log('🎵 Audio stream set to audio element, tracks:', stream.getTracks().length);
+              console.log('Audio stream set to audio element, tracks:', stream.getTracks().length);
               
               // Force play immediately with better error handling
               setTimeout(() => {
                 if (micAudioRef.current) {
-                  console.log('🔊 Attempting to play audio element...');
+                  console.log('Attempting to play audio element...');
                   micAudioRef.current.play()
                     .then(() => {
-                      console.log('✅ Audio element playing successfully');
+                      console.log('Audio element playing successfully');
                     })
                     .catch((error) => {
-                      console.error('❌ Failed to play audio element:', error);
+                      console.error('Failed to play audio element:', error);
                       console.error('Audio element state:', {
                         readyState: micAudioRef.current.readyState,
                         paused: micAudioRef.current.paused,
@@ -429,7 +430,7 @@ const Proctor = ({ user, onLogout }) => {
                 }
               }, 100);
             } else {
-              console.error('❌ Audio element reference not available');
+              console.error('Audio element reference not available');
             }
           }
 
@@ -555,7 +556,7 @@ const Proctor = ({ user, onLogout }) => {
           onClick={toggleMicMute}
           disabled={!streams.mic}
         >
-          {isMicMuted ? '🔇 Unmute Audio' : '🔊 Mute Audio'}
+          {isMicMuted ? 'Unmute Audio' : 'Mute Audio'}
         </button>
         
         <audio
