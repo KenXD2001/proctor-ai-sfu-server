@@ -3,14 +3,17 @@
  * Optimized Express server with Socket.IO and MediaSoup integration
  */
 
-// Load environment variables first
-require('dotenv').config();
+const path = require("path");
+const fs = require("fs");
+const fsp = require("fs/promises");
+
+// Load environment variables from repository root
+require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
 
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
 const socketIO = require("socket.io");
-const path = require("path");
 const config = require('./config');
 const { logger, createLogger } = require('./utils/logger');
 const { asyncHandler } = require('./utils/errors');
@@ -19,12 +22,68 @@ const { mediaSoupManager } = require('./mediasoupServer');
 
 const appLogger = createLogger('App');
 
+const PUBLIC_DIR = path.resolve(__dirname, '..', 'public');
+const FACE_EVIDENCE_DIR = path.join(PUBLIC_DIR, 'face-detection');
+const NOISE_EVIDENCE_DIR = path.join(PUBLIC_DIR, 'noise-detection');
+
+const ensureDirSync = (directory) => {
+  try {
+    fs.mkdirSync(directory, { recursive: true });
+  } catch (error) {
+    appLogger.error('Failed to ensure directory', { directory, error: error.message });
+    throw error;
+  }
+};
+
+const sanitizeSegment = (value, fallback = 'unknown') => {
+  const segment = String(value ?? '').trim();
+  if (!segment) {
+    return fallback;
+  }
+  return segment.replace(/[^a-z0-9_-]/gi, '_').slice(0, 48) || fallback;
+};
+
+const decodeBase64Data = (data) => {
+  if (typeof data !== 'string' || !data) {
+    return null;
+  }
+  const trimmed = data.trim();
+  const cleaned = trimmed.replace(/^data:[^;]+;base64,/, '');
+  try {
+    return Buffer.from(cleaned, 'base64');
+  } catch (error) {
+    appLogger.warn('Failed to decode base64 payload', { error: error.message });
+    return null;
+  }
+};
+
+const guessImageExtension = (mimeType = '') => {
+  if (mimeType.includes('webp')) return 'webp';
+  if (mimeType.includes('png')) return 'png';
+  if (mimeType.includes('jpeg') || mimeType.includes('jpg')) return 'jpg';
+  return 'webp';
+};
+
+const guessAudioExtension = (mimeType = '') => {
+  if (mimeType.includes('ogg')) return 'ogg';
+  if (mimeType.includes('mp3')) return 'mp3';
+  if (mimeType.includes('wav')) return 'wav';
+  return 'webm';
+};
+
+ensureDirSync(PUBLIC_DIR);
+ensureDirSync(FACE_EVIDENCE_DIR);
+ensureDirSync(NOISE_EVIDENCE_DIR);
+
 class ProctorAIServer {
   constructor() {
     this.app = express();
     this.server = null;
     this.io = null;
     this.isShuttingDown = false;
+    this.publicDir = PUBLIC_DIR;
+    this.faceEvidenceDir = FACE_EVIDENCE_DIR;
+    this.noiseEvidenceDir = NOISE_EVIDENCE_DIR;
     
     this.setupMiddleware();
     this.setupRoutes();
@@ -41,6 +100,15 @@ class ProctorAIServer {
     
     // JSON parsing with size limit
     this.app.use(express.json({ limit: '10mb' }));
+
+    // Serve stored evidence assets
+    this.app.use(
+      '/public',
+      express.static(this.publicDir, {
+        maxAge: '1d',
+        extensions: ['jpg', 'jpeg', 'webp', 'png', 'webm', 'ogg', 'mp3', 'wav'],
+      })
+    );
     
     // Request logging
     this.app.use((req, res, next) => {
@@ -107,6 +175,101 @@ class ProctorAIServer {
         timestamp: new Date().toISOString(),
         totalRooms: rooms.size,
         rooms: roomInfo
+      });
+    }));
+
+    // Store face evidence images
+    this.app.post('/api/face-events', asyncHandler(async (req, res) => {
+      const {
+        userId,
+        examRoomId,
+        type = 'face_event',
+        timestamp = Date.now(),
+        meta = {},
+        data,
+        mimeType = 'image/webp',
+      } = req.body || {};
+
+      if (!data) {
+        return res.status(400).json({ error: 'Missing image data' });
+      }
+
+      const buffer = decodeBase64Data(data);
+      if (!buffer || buffer.length === 0) {
+        return res.status(400).json({ error: 'Invalid image payload' });
+      }
+
+      const extension = guessImageExtension(mimeType);
+      const safeUser = sanitizeSegment(userId, 'unknown');
+      const safeRoom = sanitizeSegment(examRoomId, 'room');
+      const safeType = sanitizeSegment(type, 'event');
+      const safeTimestamp = Number.isFinite(Number(timestamp))
+        ? Number(timestamp)
+        : Date.now();
+
+      const fileName = `${safeUser}_${safeRoom}_${safeType}_${safeTimestamp}.${extension}`;
+      const filePath = path.join(this.faceEvidenceDir, fileName);
+
+      await fsp.writeFile(filePath, buffer);
+
+      appLogger.info('Stored face evidence', {
+        userId: safeUser,
+        roomId: safeRoom,
+        type: safeType,
+        fileName,
+        size: buffer.length,
+      });
+
+      res.json({
+        success: true,
+        file: `/public/face-detection/${fileName}`,
+        meta,
+      });
+    }));
+
+    // Store noise evidence audio clips
+    this.app.post('/api/noise-events', asyncHandler(async (req, res) => {
+      const {
+        userId,
+        examRoomId,
+        timestamp = Date.now(),
+        meta = {},
+        data,
+        mimeType = 'audio/webm',
+      } = req.body || {};
+
+      if (!data) {
+        return res.status(400).json({ error: 'Missing audio data' });
+      }
+
+      const buffer = decodeBase64Data(data);
+      if (!buffer || buffer.length === 0) {
+        return res.status(400).json({ error: 'Invalid audio payload' });
+      }
+
+      const extension = guessAudioExtension(mimeType);
+      const safeUser = sanitizeSegment(userId, 'unknown');
+      const safeRoom = sanitizeSegment(examRoomId, 'room');
+      const safeTimestamp = Number.isFinite(Number(timestamp))
+        ? Number(timestamp)
+        : Date.now();
+
+      const fileName = `${safeUser}_${safeRoom}_noise_${safeTimestamp}.${extension}`;
+      const filePath = path.join(this.noiseEvidenceDir, fileName);
+
+      await fsp.writeFile(filePath, buffer);
+
+      appLogger.info('Stored noise evidence', {
+        userId: safeUser,
+        roomId: safeRoom,
+        fileName,
+        size: buffer.length,
+      });
+
+      res.json({
+        success: true,
+        file: `/public/noise-detection/${fileName}`,
+        meta,
       });
     }));
 

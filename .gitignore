@@ -1,319 +1,150 @@
 # ProctorAI SFU Server - Root .gitignore
 
-# Node.js
+# ---------------------------------------------------------
+# Core dependency caches
+# ---------------------------------------------------------
 node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+**/node_modules/
+jspm_packages/
+.npm/
+.pnp/
+
+# Package manager locks (keep local only)
 package-lock.json
 yarn.lock
+pnpm-lock.yaml
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# Virtual environments
+# ---------------------------------------------------------
+# Environment & secrets
+# ---------------------------------------------------------
 .env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+.env.*
+!.env.example
+!.env.*.example
+.secrets
+secrets.json
+config.ini
+config/local.js
+config/development.js
+config/production.js
 
-# Environment variables
-.env
-.env.local
-.env.development
-.env.test
-.env.production
-
-# Logs
+# ---------------------------------------------------------
+# Logs & runtime state
+# ---------------------------------------------------------
 logs/
-*.log
+**/*.log
+*.log.*
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-
-# Runtime data
+pnpm-debug.log*
 pids
 *.pid
 *.seed
 *.pid.lock
 
-# Coverage directory used by tools like istanbul
+# ---------------------------------------------------------
+# Build & cache artifacts
+# ---------------------------------------------------------
+dist/
+build/
+dist-ssr/
+.next/
+.nuxt/
+.cache/
+.parcel-cache/
+.rpt2_cache/
+.rts2_cache_*/
+.vscode-test/
+.eslintcache
+.vite/
+.nyc_output/
 coverage/
 *.lcov
-.nyc_output
-
-# Dependency directories
-node_modules/
-jspm_packages/
-
-# Optional npm cache directory
-.npm
-
-# Optional eslint cache
-.eslintcache
-
-# Microbundle cache
-.rpt2_cache/
-.rts2_cache_cjs/
-.rts2_cache_es/
-.rts2_cache_umd/
-
-# Optional REPL history
-.node_repl_history
-
-# Output of 'npm pack'
-*.tgz
-
-# Yarn Integrity file
-.yarn-integrity
-
-# dotenv environment variables file
-.env
-.env.test
-.env.production
-.env.local
-
-# parcel-bundler cache (https://parceljs.org/)
-.cache
-.parcel-cache
-
-# Next.js build output
-.next
-
-# Nuxt.js build / generate output
-.nuxt
-dist
-
-# Gatsby files
-.cache/
-public
-
-# Storybook build outputs
-.out
-.storybook-out
-
-# Temporary folders
 tmp/
 temp/
+*.tgz
 
-# SFU Server Specific
-# Recordings and media files
+# ---------------------------------------------------------
+# Client application (Vite/React)
+# ---------------------------------------------------------
+client-application/dist/
+client-application/dist-ssr/
+client-application/.vite/
+client-application/.eslintcache
+client-application/node_modules/
+client-application/npm-debug.log*
+client-application/yarn-debug.log*
+client-application/yarn-error.log*
+client-application/pnpm-debug.log*
+client-application/.env
+client-application/.env.*
+client-application/*.local
+
+# ---------------------------------------------------------
+# Node backend (SFU server)
+# ---------------------------------------------------------
+node-application/dist/
+node-application/build/
+node-application/tmp/
+node-application/temp/
+node-application/coverage/
+node-application/node_modules/
+node-application/.env
+node-application/.env.*
+node-application/logs/
+node-application/*.log
+node-application/recordings/
+node-application/uploads/
+node-application/temp_*.sdp
+
+# ---------------------------------------------------------
+# Generated media & datasets
+# ---------------------------------------------------------
+public/face-detection/
+public/noise-detection/
 recordings/
 uploads/
+*.sdp
 *.webm
 *.mp4
 *.mp3
 *.wav
+*.flac
+*.aac
 *.jpg
 *.jpeg
 *.png
-*.gif
 *.bmp
+*.gif
 *.tiff
+*.webp
 
-# FFmpeg temporary files
-*.sdp
-temp_*.sdp
+# ---------------------------------------------------------
+# Model weights & large assets
+# ---------------------------------------------------------
+models/
+face_recognition_models/
+haarcascades/
+*.tflite
+*.task
+*.pkl
+*.joblib
+*.h5
+*.pb
+*.pt
+*.onnx
 
-# SSL certificates
-*.pem
-*.key
-*.crt
-
-# Database files
-*.db
-*.sqlite
-*.sqlite3
-
-# Configuration files with sensitive data
-config/local.js
-config/production.js
-config/development.js
-config.ini
-secrets.json
-.secrets
-
-# IDE and editor files
+# ---------------------------------------------------------
+# IDE / OS specific clutter
+# ---------------------------------------------------------
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# OS generated files
 .DS_Store
 .DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
+ehthumbs.db
 
-# Python specific
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# PyInstaller
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-target/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# IPython
-profile_default/
-ipython_config.py
-
-# pyenv
-.python-version
-
-# pipenv
-#Pipfile.lock
-
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow
-__pypackages__/
-
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
-
-# SageMath parsed files
-*.sage.py
-
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# Microservice Specific
-# Model files (if using ML models)
-models/
-*.pkl
-*.joblib
-*.h5
-*.pb
-
-# Face recognition models (if downloaded)
-face_recognition_models/
-
-# OpenCV cascade files (if downloaded)
-haarcascades/
-
-# YOLO model files
-*.pt
-*.onnx
-
-# Calibration data
-calibration_data.json
-calibration_audio.wav
-
-# Test files
-test_*.jpg
-test_*.wav
-test_*.mp3
-
-# Backup files
-*.bak
-*.backup
-*_backup.*
-
-# Cache directories
-cache/
-.cache/

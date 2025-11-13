@@ -3,13 +3,47 @@
  * Centralizes all configuration values and environment variables
  */
 
+const path = require('path');
+const dotenv = require('dotenv');
+
+dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
+
+const getEnv = (key, { required = false, defaultValue } = {}) => {
+  const value = process.env[key];
+
+  if (value === undefined || value === '') {
+    if (required) {
+      throw new Error(`Missing required environment variable: ${key}`);
+    }
+    return defaultValue;
+  }
+
+  return value;
+};
+
+const getNumberEnv = (key, { required = false, defaultValue } = {}) => {
+  const rawValue = getEnv(key, { required, defaultValue });
+
+  if (rawValue === undefined) {
+    return undefined;
+  }
+
+  const parsedValue = Number(rawValue);
+
+  if (Number.isNaN(parsedValue)) {
+    throw new Error(`Environment variable ${key} must be a number`);
+  }
+
+  return parsedValue;
+};
+
 const config = {
   // Server Configuration
   server: {
-    port: process.env.PORT || 3000,
-    host: process.env.HOST || '0.0.0.0',
+    port: getNumberEnv('PORT', { defaultValue: 3000 }),
+    host: getEnv('HOST', { defaultValue: '0.0.0.0' }),
     cors: {
-      origin: process.env.CORS_ORIGIN || '*',
+      origin: getEnv('CORS_ORIGIN', { defaultValue: '*' }),
       methods: ['GET', 'POST'],
       credentials: true,
     },
@@ -17,16 +51,16 @@ const config = {
 
   // JWT Configuration
   jwt: {
-    secret: process.env.JWT_SECRET || 'supersecret',
+    secret: getEnv('JWT_SECRET', { required: true }),
   },
 
   // WebRTC Configuration
   webrtc: {
     listenIps: [
-      { 
-        ip: process.env.WEBRTC_LISTEN_IP || '0.0.0.0', 
-        announcedIp: process.env.WEBRTC_ANNOUNCED_IP || '10.5.49.227' 
-      }
+      {
+        ip: getEnv('WEBRTC_LISTEN_IP', { defaultValue: '0.0.0.0' }),
+        announcedIp: getEnv('WEBRTC_ANNOUNCED_IP', { required: true }),
+      },
     ],
     enableUdp: true,
     enableTcp: true,
@@ -36,10 +70,10 @@ const config = {
   // MediaSoup Configuration
   mediasoup: {
     worker: {
-      logLevel: process.env.MEDIASOUP_LOG_LEVEL || 'warn',
+      logLevel: getEnv('MEDIASOUP_LOG_LEVEL', { defaultValue: 'warn' }),
       logTags: ['info', 'ice', 'dtls', 'rtp', 'srtp', 'rtcp'],
-      rtcMinPort: parseInt(process.env.RTC_MIN_PORT) || 10000,
-      rtcMaxPort: parseInt(process.env.RTC_MAX_PORT) || 59999,
+      rtcMinPort: getNumberEnv('RTC_MIN_PORT', { defaultValue: 10000 }),
+      rtcMaxPort: getNumberEnv('RTC_MAX_PORT', { defaultValue: 59999 }),
     },
     codecs: [
       {
@@ -59,7 +93,7 @@ const config = {
 
   // Recording Configuration
   recording: {
-    basePath: process.env.RECORDING_PATH || 'recordings',
+    basePath: getEnv('RECORDING_PATH', { defaultValue: 'recordings' }),
     ffmpeg: {
       timeout: 5000000,
       logLevel: 'error',
@@ -97,7 +131,7 @@ const config = {
 
   // Logging Configuration
   logging: {
-    level: process.env.LOG_LEVEL || 'info',
+    level: getEnv('LOG_LEVEL', { defaultValue: 'info' }),
     enableTimestamps: true,
   },
 };

@@ -34,7 +34,7 @@ npm start
 
 ## ⚙️ Configuration
 
-The server uses environment variables for configuration. Create a `.env` file or set the following variables:
+The project now uses a single `.env` file located at the repository root (`proctor-ai-sfu-server/.env`). Both the Node.js server and the Vite client read from this file. Update the values below to match your deployment:
 
 ```bash
 # Server Configuration
@@ -47,7 +47,7 @@ JWT_SECRET=your-secret-key
 
 # WebRTC Configuration
 WEBRTC_LISTEN_IP=0.0.0.0
-WEBRTC_ANNOUNCED_IP=10.5.49.227
+WEBRTC_ANNOUNCED_IP=<public-ip-address>
 
 # MediaSoup Configuration
 MEDIASOUP_LOG_LEVEL=warn

@@ -1,15 +1,15 @@
 /**
  * Client Application Configuration
  * Reads from environment variables (Vite uses import.meta.env)
- * Create a .env file in client-application/ with VITE_ prefix
+ * Values are provided via the repository root .env file
  */
 
 const config = {
-  // Server URL - Update this in .env file
-  serverUrl: import.meta.env.VITE_SERVER_URL || 'http://10.5.49.227:3000',
-  
+  // Server URL - configured through root .env file (VITE_SERVER_URL)
+  serverUrl: import.meta.env.VITE_SERVER_URL,
+
   // JWT Secret - Must match server secret
-  jwtSecret: import.meta.env.VITE_JWT_SECRET || 'supersecret',
+  jwtSecret: import.meta.env.VITE_JWT_SECRET,
 };
 
 export default config;
