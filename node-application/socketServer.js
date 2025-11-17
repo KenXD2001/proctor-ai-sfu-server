@@ -26,7 +26,7 @@ function startSocketServer(io) {
   io.use((socket, next) => {
     try {
       const token = socket.handshake.auth.token;
-      const decoded = jwt.verify(token, "supersecret");
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
       socket.userId = decoded.user_id;
       next();
     } catch (err) {
@@ -89,7 +89,12 @@ function startSocketServer(io) {
       const peer = room.peers.get(socket.id);
 
       const transport = await room.router.createWebRtcTransport({
-        listenIps: [{ ip: "0.0.0.0", announcedIp: "10.5.50.167" }],
+        listenIps: [
+          {
+            ip: process.env.MEDIASOUP_LISTEN_IP,
+            announcedIp: process.env.MEDIASOUP_ANNOUNCED_IP,
+          },
+        ],
         enableUdp: true,
         enableTcp: true,
         preferUdp: true,
