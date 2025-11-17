@@ -18,7 +18,6 @@ const express = require("express");
 const http = require("http");
 const cors = require("cors");
 const socketIO = require("socket.io");
-const path = require("path");
 const config = require('./config');
 const { logger, createLogger } = require('./utils/logger');
 const { asyncHandler } = require('./utils/errors');
@@ -116,6 +115,81 @@ class ProctorAIServer {
         totalRooms: rooms.size,
         rooms: roomInfo
       });
+    }));
+
+    // Detection frame upload endpoint
+    this.app.post('/api/detection/upload-frame', asyncHandler(async (req, res) => {
+      const { examId, batchId, candidateId, violationType, frameData } = req.body;
+
+      if (!examId || !batchId || !candidateId || !violationType || !frameData) {
+        return res.status(400).json({
+          error: 'Missing required fields: examId, batchId, candidateId, violationType, frameData'
+        });
+      }
+
+      try {
+        // Generate filename with date format: face_detection_2025_11_17_12_23_50.webp
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        const seconds = String(now.getSeconds()).padStart(2, '0');
+        const dateStr = `${year}_${month}_${day}_${hours}_${minutes}_${seconds}`;
+        const filename = `face_detection_${dateStr}.webp`;
+
+        // Build path: detection/webcam/exam_id/batch_id/candidate_id/filename
+        // detection folder should be at the same level as recordings folder
+        // If recordings is at node-application/recordings, detection should be at node-application/detection
+        const recordingsDir = path.resolve(__dirname, config.recording.basePath);
+        const baseDir = path.dirname(recordingsDir);
+        let detectionPath = path.join(baseDir, 'detection', 'webcam');
+        
+        if (examId) {
+          detectionPath = path.join(detectionPath, examId);
+        }
+        if (batchId) {
+          detectionPath = path.join(detectionPath, batchId);
+        }
+        if (candidateId) {
+          detectionPath = path.join(detectionPath, candidateId);
+        }
+
+        // Ensure directory exists
+        await fs.promises.mkdir(detectionPath, { recursive: true });
+
+        // Convert base64 to buffer and save
+        const buffer = Buffer.from(frameData, 'base64');
+        const fullPath = path.join(detectionPath, filename);
+        await fs.promises.writeFile(fullPath, buffer);
+
+        appLogger.info('Detection frame saved', {
+          violationType,
+          examId,
+          batchId,
+          candidateId,
+          path: fullPath,
+          size: buffer.length
+        });
+
+        res.json({
+          success: true,
+          message: 'Frame saved successfully',
+          path: fullPath,
+          violationType,
+          timestamp: now.toISOString()
+        });
+      } catch (error) {
+        appLogger.error('Error saving detection frame', {
+          error: error.message,
+          examId,
+          batchId,
+          candidateId,
+          violationType
+        });
+        throw error;
+      }
     }));
 
     // 404 handler

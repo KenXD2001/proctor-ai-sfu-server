@@ -6,7 +6,7 @@ A professional WebRTC SFU (Selective Forwarding Unit) server optimized for onlin
 
 - **High-Performance WebRTC**: Built with MediaSoup for optimal streaming performance
 - **Role-Based Access Control**: Student → Invigilator → Admin hierarchy
-- **Multi-Stream Recording**: Screen, webcam, and audio recording with FFmpeg
+- **Screen Recording**: Screen share recording with FFmpeg
 - **Professional Error Handling**: Comprehensive error management and logging
 - **Resource Management**: Automatic cleanup and memory optimization
 - **Scalable Architecture**: Class-based design with singleton patterns
@@ -111,7 +111,7 @@ GET /rooms
 - `join-room`: Join a room with role-based access
 - `create-transport`: Create WebRTC transport
 - `connect-transport`: Connect transport with DTLS parameters
-- `produce`: Start media production (screen/webcam/audio)
+- `produce`: Start media production (screen/webcam/audio streams)
 - `consume`: Consume media from other peers
 - `get-producers`: Get list of accessible producers
 
@@ -124,22 +124,13 @@ GET /rooms
 
 ## 🎥 Recording System
 
-The server automatically records different types of media:
+The server automatically records screen shares from students:
 
 ### Screen Recording
 - **Format**: WebM video files
 - **Trigger**: When students share screen
 - **Storage**: `recordings/screen/{userId}_screen_{timestamp}.webm`
-
-### Webcam Recording
-- **Format**: Single JPEG frame
-- **Trigger**: When students enable webcam
-- **Storage**: `recordings/webcam/{userId}_frame.jpg`
-
-### Audio Recording
-- **Format**: 10-second MP3 chunks
-- **Trigger**: When students enable microphone
-- **Storage**: `recordings/audio/{userId}_audio.mp3`
+- **Codec**: VP8 (direct copy, no re-encoding for efficiency)
 
 ## 🔐 Role-Based Access Control
 

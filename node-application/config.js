@@ -80,17 +80,6 @@ const config = {
       logLevel: process.env.RECORDING_FFMPEG_LOG_LEVEL || 'error',
       flags: parseArray(process.env.RECORDING_FFMPEG_FLAGS, ['+genpts']),
     },
-    audio: {
-      duration: parseInt(process.env.RECORDING_AUDIO_DURATION) || 10, // seconds
-      bitrate: process.env.RECORDING_AUDIO_BITRATE || '128k',
-      sampleRate: parseInt(process.env.RECORDING_AUDIO_SAMPLE_RATE) || 44100,
-      channels: parseInt(process.env.RECORDING_AUDIO_CHANNELS) || 2,
-      codec: process.env.RECORDING_AUDIO_CODEC || 'libmp3lame',
-    },
-    webcam: {
-      quality: parseInt(process.env.RECORDING_WEBCAM_QUALITY) || 2, // JPEG quality (1-31, lower is better)
-      maxFrames: parseInt(process.env.RECORDING_WEBCAM_MAX_FRAMES) || 1,
-    },
   },
 
   // Timeout Configuration

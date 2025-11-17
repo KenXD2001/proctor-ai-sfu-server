@@ -5,6 +5,7 @@
 
 const jwt = require("jsonwebtoken");
 const path = require("path");
+const fs = require("fs").promises;
 const config = require('./config');
 const { logger, createLogger } = require('./utils/logger');
 const { 
@@ -18,7 +19,7 @@ const {
   validateRole 
 } = require('./utils/errors');
 const { mediaSoupManager } = require('./mediasoupServer');
-const { createConsumerAndRecord, createWebcamRecording, createAudioRecording } = require('./recorder');
+const { createConsumerAndRecord } = require('./recorder');
 
 const socketLogger = createLogger('SocketServer');
 
@@ -117,7 +118,7 @@ function startSocketServer(io) {
     });
 
     // Join room handler
-    socket.on("join-room", async ({ roomId, role }) => {
+    socket.on("join-room", async ({ roomId, role, examId }) => {
       try {
         validateRequired({ roomId, role }, ['roomId', 'role']);
         
@@ -138,6 +139,7 @@ function startSocketServer(io) {
         const peer = {
           socket,
           role: userRole,
+          examId: examId || null, // Store examId from client
           transports: [],
           producers: [],
           consumers: [],
@@ -152,6 +154,7 @@ function startSocketServer(io) {
         socketLogger.room('joined', roomId, {
           userId: socket.userId,
           role: userRole,
+          examId: examId || null,
           totalPeers: room.peers.size
         });
 
@@ -282,7 +285,7 @@ function startSocketServer(io) {
 
         // Start recording based on stream type and role
         if (peer.role === 'student') {
-          await startRecording(producer, room.router, socket.userId, appData, peer);
+          await startRecording(producer, room.router, socket.userId, appData, peer, room.id);
         }
 
         callback({ id: producer.id });
@@ -456,59 +459,64 @@ function startSocketServer(io) {
 }
 
 /**
- * Start recording based on stream type
+ * Start recording based on stream type (screen only)
  */
-async function startRecording(producer, router, userId, appData, peer) {
-  const recordingPromises = [];
-
-  // Screen recording
+async function startRecording(producer, router, userId, appData, peer, roomId) {
+  // Screen recording only
   if (producer.kind === 'video' && 
       (appData.source === 'screen' || appData.type === 'screen' || appData.source === 'screen-share')) {
     
-    const filename = path.join(config.recording.basePath, 'screen', `${userId}_screen_${Date.now()}.webm`);
-    recordingPromises.push(
-      createConsumerAndRecord(producer, router, filename)
-        .then(session => {
-          peer.recordingSessions.set(producer.id, session);
-          socketLogger.recording('started', { type: 'screen', userId });
-        })
-    );
-  }
-
-  // Webcam recording
-  if (producer.kind === 'video' && 
-      (appData.source === 'webcam' || appData.type === 'webcam' || appData.source === 'camera')) {
-    
-    recordingPromises.push(
-      createWebcamRecording(producer, router, userId)
-        .then(session => {
-          peer.recordingSessions.set(producer.id, session);
-          socketLogger.recording('started', { type: 'webcam', userId });
-        })
-    );
-  }
-
-  // Audio recording
-  if (producer.kind === 'audio' && 
-      (appData.source === 'mic' || appData.type === 'mic' || appData.source === 'microphone')) {
-    
-    recordingPromises.push(
-      createAudioRecording(producer, router, userId)
-        .then(session => {
-          peer.recordingSessions.set(producer.id, session);
-          socketLogger.recording('started', { type: 'audio', userId });
-        })
-    );
-  }
-
-  // Execute all recording promises
-  try {
-    await Promise.all(recordingPromises);
-  } catch (error) {
-    socketLogger.error('Recording setup failed', {
-      userId,
-      error: error.message
-    });
+    try {
+      // Determine candidate_id (userId if role is student/candidate)
+      const candidateId = (peer.role === 'student' || peer.role === 'candidate') ? userId : null;
+      const examId = peer.examId || null;
+      const batchId = roomId || null; // roomId is the batch_id
+      
+      // Generate filename with date format: screen_recording_2025_11_17_12_23_50.webm
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const day = String(now.getDate()).padStart(2, '0');
+      const hours = String(now.getHours()).padStart(2, '0');
+      const minutes = String(now.getMinutes()).padStart(2, '0');
+      const seconds = String(now.getSeconds()).padStart(2, '0');
+      const dateStr = `${year}_${month}_${day}_${hours}_${minutes}_${seconds}`;
+      const filename = `screen_recording_${dateStr}.webm`;
+      
+      // Build path: recordings/screen/exam_id/batch_id/candidate_id/filename
+      let recordingPath = path.join(config.recording.basePath, 'screen');
+      
+      if (examId) {
+        recordingPath = path.join(recordingPath, examId);
+      }
+      if (batchId) {
+        recordingPath = path.join(recordingPath, batchId);
+      }
+      if (candidateId) {
+        recordingPath = path.join(recordingPath, candidateId);
+      }
+      
+      // Ensure directory exists
+      await fs.mkdir(recordingPath, { recursive: true });
+      
+      const fullPath = path.join(recordingPath, filename);
+      const session = await createConsumerAndRecord(producer, router, fullPath);
+      peer.recordingSessions.set(producer.id, session);
+      
+      socketLogger.recording('started', { 
+        type: 'screen', 
+        userId,
+        candidateId,
+        examId,
+        batchId,
+        path: fullPath
+      });
+    } catch (error) {
+      socketLogger.error('Screen recording setup failed', {
+        userId,
+        error: error.message
+      });
+    }
   }
 }
 

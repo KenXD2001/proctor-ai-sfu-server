@@ -1,6 +1,6 @@
 /**
  * Professional recording service with optimized FFmpeg integration
- * Handles screen, webcam, and audio recording with proper error handling
+ * Handles screen recording with proper error handling
  */
 
 const { spawn } = require("child_process");
@@ -174,39 +174,28 @@ function calculateFFmpegPort(basePort) {
 }
 
 /**
- * Generate SDP content for FFmpeg
+ * Generate SDP content for FFmpeg (video only for screen recording)
  */
 function generateSDPContent(rtpParameters, payloadType, kind, recordingType) {
-  const codec = kind === 'video' ? 'VP8' : 'opus';
-  const clockRate = kind === 'video' ? 90000 : 48000;
-  const channels = kind === 'audio' ? 2 : undefined;
+  const codec = 'VP8';
+  const clockRate = 90000;
   const recorderIp = config.recording.recorderIp;
   
-  let sdpContent = `v=0
+  const sdpContent = `v=0
 o=- 0 0 IN IP4 ${recorderIp}
 s=mediasoup recording
 c=IN IP4 ${recorderIp}
-t=0 0`;
-
-  if (kind === 'video') {
-    sdpContent += `
+t=0 0
 m=video ${rtpParameters.port} RTP/AVP ${payloadType}
 a=rtpmap:${payloadType} ${codec}/${clockRate}
 a=sendonly
 a=fmtp:${payloadType} x-google-start-bitrate=800;x-google-min-bitrate=400;x-google-max-bitrate=2000`;
-  } else {
-    sdpContent += `
-m=audio ${rtpParameters.port} RTP/AVP ${payloadType}
-a=rtpmap:${payloadType} ${codec}/${clockRate}${channels ? `/${channels}` : ''}
-a=sendonly
-a=fmtp:${payloadType} useinbandfec=1;stereo=1;maxplaybackrate=48000`;
-  }
   
   return sdpContent;
 }
 
 /**
- * Generate FFmpeg arguments based on recording type
+ * Generate FFmpeg arguments for screen recording
  */
 function generateFFmpegArgs(recordingType, kind, output) {
   const baseArgs = [
@@ -222,38 +211,13 @@ function generateFFmpegArgs(recordingType, kind, output) {
     "-max_delay", "500000", // Maximum delay in microseconds
   ];
 
-  if (kind === 'video') {
-    if (recordingType === 'webcam') {
-      // Single frame capture - output options must come after input
-      return [
-        ...baseArgs,
-        "-i", "INPUT_PLACEHOLDER", // Will be replaced with SDP file
-        "-vframes", config.recording.webcam.maxFrames.toString(),
-        "-q:v", config.recording.webcam.quality.toString(),
-        output,
-      ];
-    } else {
-      // Screen recording - direct copy for efficiency
-      return [
-        ...baseArgs,
-        "-i", "INPUT_PLACEHOLDER", // Will be replaced with SDP file
-        "-c:v", "copy",
-        output,
-      ];
-    }
-  } else {
-    // Audio recording - output options must come after input
-    return [
-      ...baseArgs,
-      "-i", "INPUT_PLACEHOLDER", // Will be replaced with SDP file
-      "-c:a", config.recording.audio.codec,
-      "-b:a", config.recording.audio.bitrate,
-      "-ar", config.recording.audio.sampleRate.toString(),
-      "-ac", config.recording.audio.channels.toString(),
-      "-t", config.recording.audio.duration.toString(),
-      output,
-    ];
-  }
+  // Screen recording - direct copy for efficiency
+  return [
+    ...baseArgs,
+    "-i", "INPUT_PLACEHOLDER", // Will be replaced with SDP file
+    "-c:v", "copy",
+    output,
+  ];
 }
 
 /**
@@ -474,69 +438,9 @@ async function createConsumerAndRecord(producer, router, filename) {
   }
 }
 
-/**
- * Create webcam frame capture session
- */
-async function createWebcamRecording(producer, router, userId) {
-  try {
-    validateRequired({ producer, router, userId }, ['producer', 'router', 'userId']);
-    
-    const outputFile = path.join(config.recording.basePath, 'webcam', `${userId}_frame.jpg`);
-    
-    recordLogger.recording('starting', { 
-      type: 'webcam',
-      userId,
-      filename: path.basename(outputFile) 
-    });
-
-    const session = await createRecordingSession(
-      producer, 
-      router, 
-      outputFile, 
-      'webcam'
-    );
-
-    return session;
-  } catch (error) {
-    recordLogger.error('Webcam recording error', { error: error.message });
-    throw new RecordingError(`Webcam recording failed: ${error.message}`);
-  }
-}
-
-/**
- * Create audio recording session
- */
-async function createAudioRecording(producer, router, userId) {
-  try {
-    validateRequired({ producer, router, userId }, ['producer', 'router', 'userId']);
-    
-    const outputFile = path.join(config.recording.basePath, 'audio', `${userId}_audio.mp3`);
-    
-    recordLogger.recording('starting', { 
-      type: 'audio',
-      userId,
-      filename: path.basename(outputFile) 
-    });
-
-    const session = await createRecordingSession(
-      producer, 
-      router, 
-      outputFile, 
-      'audio'
-    );
-
-    return session;
-  } catch (error) {
-    recordLogger.error('Audio recording error', { error: error.message });
-    throw new RecordingError(`Audio recording failed: ${error.message}`);
-  }
-}
-
 module.exports = {
   createRecorderTransport,
   startFFmpegRecording,
   createConsumerAndRecord,
-  createWebcamRecording,
-  createAudioRecording,
   RecordingSession,
 };
