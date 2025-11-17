@@ -3,6 +3,17 @@
  * Optimized Express server with Socket.IO and MediaSoup integration
  */
 
+// Load environment variables from .env file
+// Look for .env in parent directory (proctor-ai-sfu-server/.env) or current directory
+const path = require('path');
+const fs = require('fs');
+const envPath = path.join(__dirname, '..', '.env');
+if (fs.existsSync(envPath)) {
+  require('dotenv').config({ path: envPath });
+} else {
+  require('dotenv').config();
+}
+
 const express = require("express");
 const http = require("http");
 const cors = require("cors");

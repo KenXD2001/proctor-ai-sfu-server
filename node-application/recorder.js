@@ -103,8 +103,9 @@ function isPortAvailable(port, timeout = 1000) {
  */
 async function createRecorderTransport(router) {
   try {
+    const recorderIp = config.recording.recorderIp;
     const transport = await router.createPlainTransport({
-      listenIp: { ip: "127.0.0.1", announcedIp: "127.0.0.1" },
+      listenIp: { ip: recorderIp, announcedIp: recorderIp },
       rtcpMux: true,
       comedia: false,
     });
@@ -159,7 +160,8 @@ async function waitForProducerActive(producer, timeout = config.timeouts.produce
  * Calculate optimal FFmpeg port
  */
 function calculateFFmpegPort(basePort) {
-  let ffmpegPort = basePort + 10000;
+  const portOffset = config.recording.ffmpegPortOffset;
+  let ffmpegPort = basePort + portOffset;
   
   if (ffmpegPort > 65535) {
     ffmpegPort = basePort + 1000;
@@ -178,11 +180,12 @@ function generateSDPContent(rtpParameters, payloadType, kind, recordingType) {
   const codec = kind === 'video' ? 'VP8' : 'opus';
   const clockRate = kind === 'video' ? 90000 : 48000;
   const channels = kind === 'audio' ? 2 : undefined;
+  const recorderIp = config.recording.recorderIp;
   
   let sdpContent = `v=0
-o=- 0 0 IN IP4 127.0.0.1
+o=- 0 0 IN IP4 ${recorderIp}
 s=mediasoup recording
-c=IN IP4 127.0.0.1
+c=IN IP4 ${recorderIp}
 t=0 0`;
 
   if (kind === 'video') {
@@ -415,7 +418,7 @@ async function createRecordingSession(producer, router, outputPath, type) {
 
     // Connect transport to FFmpeg
     await session.transport.connect({
-      ip: '127.0.0.1',
+      ip: config.recording.recorderIp,
       port: ffmpegPort
     });
 
