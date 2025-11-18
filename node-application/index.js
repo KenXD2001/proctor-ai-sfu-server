@@ -192,8 +192,8 @@ class ProctorAIServer {
       }
     }));
 
-    // 404 handler
-    this.app.use('*', (req, res) => {
+    // 404 handler - catch all unmatched routes
+    this.app.use((req, res) => {
       res.status(404).json({
         error: 'Not found',
         path: req.originalUrl,
