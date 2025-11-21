@@ -45,12 +45,12 @@ temp/
 # ============================================
 # Environment Files (IMPORTANT: Keep secrets out of git)
 # ============================================
-#.env
-#.env.local
-#.env.*.local
-#.env.production
-#.env.development
-#.env.test
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+.env.test
 # Keep .env.example in git as a template
 
 # ============================================
@@ -59,6 +59,8 @@ temp/
 # Recordings contain sensitive exam data - never commit these
 node-application/recordings/
 recordings/
+node-application/detection/
+detection/
 *.webm
 *.mp3
 *.mp4
