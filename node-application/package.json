@@ -1,25 +1,49 @@
 {
-  "name": "sfu_server",
-  "version": "1.0.0",
+  "name": "proctor-ai-sfu-server",
+  "version": "2.0.0",
+  "description": "Professional WebRTC SFU server for online exam proctoring with optimized recording capabilities",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "start:verbose": "./start.sh",
+    "dev": "nodemon index.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "lint": "echo \"No linter configured\" && exit 0"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "webrtc",
+    "sfu",
+    "proctoring",
+    "exam",
+    "mediasoup",
+    "socket.io",
+    "recording"
+  ],
+  "author": "ProctorAI Team",
   "license": "ISC",
-  "description": "",
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
+  },
   "dependencies": {
+    "aws-sdk": "^2.1691.0",
     "cors": "^2.8.5",
-    "dotenv": "^17.2.3",
-    "express": "^5.1.0",
-    "http": "^0.0.1-security",
+    "dotenv": "^16.4.5",
+    "express": "^4.18.2",
     "jsonwebtoken": "^9.0.2",
     "mediasoup": "^3.16.5",
+    "node-fetch": "^2.7.0",
     "socket.io": "^4.8.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.10"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/proctor-ai/sfu-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/proctor-ai/sfu-server/issues"
+  },
+  "homepage": "https://github.com/proctor-ai/sfu-server#readme"
 }
