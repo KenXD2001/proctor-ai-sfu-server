@@ -397,6 +397,15 @@ async function startFFmpegRecording(session, args) {
       session.ffmpeg.stderr.on("data", (data) => {
         const message = data.toString();
         
+        // Log all FFmpeg output for debugging (first 10 lines)
+        if (!ffmpegStarted) {
+          const lines = message.split('\n').filter(l => l.trim()).slice(0, 5);
+          recordLogger.debug('FFmpeg stderr output', {
+            producerId: session.producerId,
+            lines: lines
+          });
+        }
+        
         if (message.includes("Stream mapping:") && !ffmpegStarted) {
           ffmpegStarted = true;
           recordLogger.info('FFmpeg recording started', { 
@@ -405,22 +414,29 @@ async function startFFmpegRecording(session, args) {
           });
         }
         
-        if (message.includes("frame=") || message.includes("size=")) {
+        if (message.includes("frame=") || message.includes("size=") || message.includes("time=")) {
           if (!rtpDataReceived) {
             rtpDataReceived = true;
             recordLogger.info('FFmpeg receiving data', { 
               producerId: session.producerId,
-              type: session.type 
+              type: session.type,
+              sample: message.trim().substring(0, 100)
             });
           }
         }
         
-        if (message.toLowerCase().includes("error") || message.toLowerCase().includes("failed")) {
+        // Check for common FFmpeg errors
+        const lowerMessage = message.toLowerCase();
+        if (lowerMessage.includes("error") || 
+            lowerMessage.includes("failed") || 
+            lowerMessage.includes("cannot") ||
+            lowerMessage.includes("no such file") ||
+            lowerMessage.includes("permission denied")) {
           if (!hasError) {
             hasError = true;
             recordLogger.error('FFmpeg error detected', { 
               producerId: session.producerId,
-              error: message.trim() 
+              error: message.trim().substring(0, 500) // Limit error message length
             });
           }
         }
@@ -429,17 +445,60 @@ async function startFFmpegRecording(session, args) {
       session.ffmpeg.on("close", (code) => {
         session.status = code === 0 ? 'completed' : 'failed';
         
+        // Always check file existence regardless of rtpDataReceived
+        const fileExists = fsSync.existsSync(session.outputPath);
+        const outputDir = path.dirname(session.outputPath);
+        const dirExists = fsSync.existsSync(outputDir);
+        
         if (rtpDataReceived) {
-          recordLogger.info('FFmpeg recording completed', { 
-            producerId: session.producerId,
-            exitCode: code,
-            duration: Date.now() - session.createdAt.getTime()
-          });
+          if (fileExists) {
+            const stats = fsSync.statSync(session.outputPath);
+            recordLogger.info('FFmpeg recording completed', { 
+              producerId: session.producerId,
+              exitCode: code,
+              duration: Date.now() - session.createdAt.getTime(),
+              fileSize: stats.size,
+              outputPath: session.outputPath
+            });
+          } else {
+            recordLogger.error('FFmpeg completed but file not found', {
+              producerId: session.producerId,
+              exitCode: code,
+              outputPath: session.outputPath,
+              directoryExists: dirExists,
+              rtpDataReceived: true
+            });
+          }
         } else {
           recordLogger.warn('FFmpeg recording stopped - no data received', { 
             producerId: session.producerId,
-            exitCode: code 
+            exitCode: code,
+            outputPath: session.outputPath,
+            fileExists: fileExists,
+            directoryExists: dirExists,
+            ffmpegStarted: ffmpegStarted,
+            ffmpegPath: FFMPEG_PATH
           });
+          
+          // Check if file was created despite no data received message
+          if (fileExists) {
+            const stats = fsSync.statSync(session.outputPath);
+            recordLogger.info('Recording file exists after FFmpeg exit (despite no data warning)', {
+              producerId: session.producerId,
+              outputPath: session.outputPath,
+              fileSize: stats.size,
+              exitCode: code
+            });
+          } else {
+            recordLogger.error('Recording file not created', {
+              producerId: session.producerId,
+              outputPath: session.outputPath,
+              exitCode: code,
+              directoryExists: dirExists,
+              ffmpegPath: FFMPEG_PATH,
+              command: `${FFMPEG_PATH} ${args.join(' ')}`
+            });
+          }
         }
         
         resolve();
@@ -474,6 +533,23 @@ async function createRecordingSession(producer, router, outputPath, type, examId
     // Ensure output directory exists
     const outputDir = path.dirname(outputPath);
     await fs.mkdir(outputDir, { recursive: true });
+    
+    // Verify directory was created and is writable
+    try {
+      await fs.access(outputDir, fsSync.constants.W_OK);
+      recordLogger.info('Output directory verified', {
+        producerId: producer.id,
+        outputDir,
+        outputPath
+      });
+    } catch (accessError) {
+      recordLogger.error('Output directory not writable', {
+        producerId: producer.id,
+        outputDir,
+        error: accessError.message
+      });
+      throw new RecordingError(`Output directory not writable: ${outputDir}`);
+    }
 
     // Create transport
     session.transport = await createRecorderTransport(router);
@@ -537,22 +613,55 @@ async function createRecordingSession(producer, router, outputPath, type, examId
     });
 
     // Start FFmpeg process
+    recordLogger.info('Starting FFmpeg recording process', {
+      producerId: producer.id,
+      type,
+      ffmpegPath: FFMPEG_PATH,
+      outputPath,
+      ffmpegPort,
+      recorderIp: config.recording.recorderIp
+    });
+    
     await startFFmpegRecording(session, args);
 
     // Wait for initialization
     await new Promise(resolve => setTimeout(resolve, config.timeouts.ffmpegInit));
 
     // Connect transport to FFmpeg
+    recordLogger.info('Connecting transport to FFmpeg', {
+      producerId: producer.id,
+      ip: config.recording.recorderIp,
+      port: ffmpegPort,
+      transportId: session.transport.id
+    });
+    
     await session.transport.connect({
       ip: config.recording.recorderIp,
       port: ffmpegPort
+    });
+    
+    recordLogger.info('Transport connected to FFmpeg', {
+      producerId: producer.id,
+      transportId: session.transport.id
     });
 
     // Wait for connection to stabilize
     await new Promise(resolve => setTimeout(resolve, config.timeouts.transportStabilize));
 
     // Resume consumer to start data flow
+    recordLogger.info('Resuming consumer to start data flow', {
+      producerId: producer.id,
+      consumerId: session.consumer.id,
+      paused: session.consumer.paused
+    });
+    
     await session.consumer.resume();
+    
+    recordLogger.info('Consumer resumed, data flow should start', {
+      producerId: producer.id,
+      consumerId: session.consumer.id,
+      paused: session.consumer.paused
+    });
     
     recordLogger.recording('active', {
       producerId: producer.id,
