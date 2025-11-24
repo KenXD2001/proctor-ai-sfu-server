@@ -4,6 +4,7 @@
  */
 
 const { spawn } = require("child_process");
+const { execSync } = require("child_process");
 const fs = require("fs").promises;
 const fsSync = require("fs");
 const path = require("path");
@@ -14,6 +15,54 @@ const { RecordingError, validateRequired } = require('./utils/errors');
 const { uploadAndSaveRecording } = require('./uploadService');
 
 const recordLogger = createLogger('Recorder');
+
+/**
+ * Find FFmpeg executable in common locations
+ * Handles snap-installed FFmpeg and standard system installations
+ */
+function findFFmpegPath() {
+  // Common FFmpeg locations (order matters - check snap first)
+  const possiblePaths = [
+    '/snap/bin/ffmpeg',           // Snap installation (most common on servers)
+    '/usr/bin/ffmpeg',            // Standard system installation
+    '/usr/local/bin/ffmpeg',      // Local installation
+  ];
+
+  // Check if file exists and is executable
+  for (const ffmpegPath of possiblePaths) {
+    try {
+      if (fsSync.existsSync(ffmpegPath)) {
+        // Check if executable
+        fsSync.accessSync(ffmpegPath, fsSync.constants.X_OK);
+        recordLogger.info('FFmpeg found', { path: ffmpegPath });
+        return ffmpegPath;
+      }
+    } catch (e) {
+      // File doesn't exist or not executable, try next
+      continue;
+    }
+  }
+
+  // Try PATH-based lookup as fallback
+  try {
+    const whichResult = execSync('which ffmpeg', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    if (whichResult) {
+      recordLogger.info('FFmpeg found via PATH', { path: whichResult });
+      return whichResult;
+    }
+  } catch (e) {
+    // which command failed or ffmpeg not in PATH
+  }
+
+  // If nothing found, log warning and return 'ffmpeg' as fallback
+  recordLogger.warn('FFmpeg not found in common locations, using "ffmpeg" (will rely on PATH)', {
+    checkedPaths: possiblePaths
+  });
+  return 'ffmpeg';
+}
+
+// Cache FFmpeg path on module load
+const FFMPEG_PATH = findFFmpegPath();
 
 /**
  * Recording session manager
@@ -325,8 +374,21 @@ function generateFFmpegArgs(recordingType, kind, output) {
 async function startFFmpegRecording(session, args) {
   return new Promise((resolve, reject) => {
     try {
-      session.ffmpeg = spawn("ffmpeg", args);
+      // Use the found FFmpeg path
+      session.ffmpeg = spawn(FFMPEG_PATH, args, {
+        env: {
+          ...process.env,
+          // Ensure PATH includes snap/bin for any subprocesses
+          PATH: process.env.PATH + ':/snap/bin'
+        }
+      });
       session.status = 'recording';
+      
+      recordLogger.info('FFmpeg process started', {
+        producerId: session.producerId,
+        ffmpegPath: FFMPEG_PATH,
+        command: `${FFMPEG_PATH} ${args.join(' ')}`
+      });
       
       let ffmpegStarted = false;
       let rtpDataReceived = false;
@@ -470,7 +532,8 @@ async function createRecordingSession(producer, router, outputPath, type, examId
     recordLogger.info('FFmpeg command', {
       producerId: producer.id,
       type,
-      command: `ffmpeg ${args.join(' ')}`
+      ffmpegPath: FFMPEG_PATH,
+      command: `${FFMPEG_PATH} ${args.join(' ')}`
     });
 
     // Start FFmpeg process
@@ -653,7 +716,8 @@ async function createCombinedWebcamRecording(videoProducer, audioProducer, route
     recordLogger.info('FFmpeg combined command', {
       videoProducerId: videoProducer.id,
       audioProducerId: audioProducer.id,
-      command: `ffmpeg ${args.join(' ')}`
+      ffmpegPath: FFMPEG_PATH,
+      command: `${FFMPEG_PATH} ${args.join(' ')}`
     });
 
     // Start FFmpeg process
