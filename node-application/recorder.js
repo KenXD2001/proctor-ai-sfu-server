@@ -512,6 +512,7 @@ async function createRecordingSession(producer, router, outputPath, type, examId
 }
 
 /**
+<<<<<<< HEAD
  * Generate combined SDP content for FFmpeg (video + audio)
  */
 function generateCombinedSDPContent(videoRtpParams, audioRtpParams, videoPayloadType, audioPayloadType) {
