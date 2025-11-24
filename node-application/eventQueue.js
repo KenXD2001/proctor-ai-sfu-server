@@ -254,8 +254,9 @@ class EventQueue {
    * Save flag session to backend API
    */
   async saveFlagSessionToBackend({ examId, batchId, candidateId, eventType, imageUrl, imageObjectKey, metadata }) {
-    // Map violation types to backend event types
+    // Map violation types to backend event types (handles both camelCase and snake_case)
     const eventTypeMapping = {
+      // Snake case mappings
       'face_mismatch': 'face_mismatch',
       'face_missing': 'face_missing',
       'fullscreen_exit': 'fullscreen_exit',
@@ -264,6 +265,19 @@ class EventQueue {
       'max_fullscreen_exit_exceeded': 'fullscreen_exit',
       'multiple_faces_detected': 'multiple_faces_detected',
       'looking_away': 'looking_away',
+      'head_turns': 'head_turns',
+      'frequent_head_turns': 'frequent_head_turns',
+      // Camel case mappings (from frontend)
+      'faceMismatch': 'face_mismatch',
+      'faceMissing': 'face_missing',
+      'fullscreenExit': 'fullscreen_exit',
+      'tabSwitch': 'tab_switched',
+      'tabSwitched': 'tab_switched',
+      'multipleFaces': 'multiple_faces_detected',
+      'multipleFacesDetected': 'multiple_faces_detected',
+      'lookingAway': 'looking_away',
+      'headTurns': 'head_turns',
+      'frequentHeadTurns': 'frequent_head_turns',
     };
 
     const mappedEventType = eventTypeMapping[eventType] || eventType;
@@ -293,7 +307,17 @@ class EventQueue {
     });
 
     // Call backend API to save flag session
-    const response = await fetch(`${BACKEND_API_URL}/api/exam-sessions/save-flag-session?${params.toString()}`, {
+    const apiUrl = `${BACKEND_API_URL}/api/exam-sessions/save-flag-session?${params.toString()}`;
+    
+    queueLogger.info('Calling backend API to save flag session', {
+      url: apiUrl,
+      eventType: mappedEventType,
+      examId,
+      batchId,
+      candidateId,
+    });
+
+    const response = await fetch(apiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -303,6 +327,16 @@ class EventQueue {
 
     if (!response.ok) {
       const errorText = await response.text();
+      queueLogger.error('Backend API request failed', {
+        url: apiUrl,
+        status: response.status,
+        statusText: response.statusText,
+        errorText,
+        eventType: mappedEventType,
+        examId,
+        batchId,
+        candidateId,
+      });
       throw new Error(`Backend API error: ${response.status} ${response.statusText} - ${errorText}`);
     }
 
