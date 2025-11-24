@@ -117,7 +117,7 @@ class ProctorAIServer {
       });
     }));
 
-    // Detection frame upload endpoint
+    // Detection frame upload endpoint - Uses queue system with S3 upload
     this.app.post('/api/detection/upload-frame', asyncHandler(async (req, res) => {
       const { examId, batchId, candidateId, violationType, frameData } = req.body;
 
@@ -128,7 +128,7 @@ class ProctorAIServer {
       }
 
       try {
-        // Generate filename with date format: face_detection_2025_11_17_12_23_50.webp
+        // Generate filename with date format: {violationType}_2025_11_17_12_23_50.webp
         const now = new Date();
         const year = now.getFullYear();
         const month = String(now.getMonth() + 1).padStart(2, '0');
@@ -137,51 +137,56 @@ class ProctorAIServer {
         const minutes = String(now.getMinutes()).padStart(2, '0');
         const seconds = String(now.getSeconds()).padStart(2, '0');
         const dateStr = `${year}_${month}_${day}_${hours}_${minutes}_${seconds}`;
-        const filename = `face_detection_${dateStr}.webp`;
+        const filename = `${violationType}_${dateStr}.webp`;
 
-        // Build path: detection/webcam/exam_id/batch_id/candidate_id/filename
-        // detection folder should be at the same level as recordings folder
-        // If recordings is at node-application/recordings, detection should be at node-application/detection
-        const recordingsDir = path.resolve(__dirname, config.recording.basePath);
-        const baseDir = path.dirname(recordingsDir);
-        let detectionPath = path.join(baseDir, 'detection', 'webcam');
-        
-        if (examId) {
-          detectionPath = path.join(detectionPath, examId);
-        }
-        if (batchId) {
-          detectionPath = path.join(detectionPath, batchId);
-        }
-        if (candidateId) {
-          detectionPath = path.join(detectionPath, candidateId);
-        }
-
-        // Ensure directory exists
-        await fs.promises.mkdir(detectionPath, { recursive: true });
-
-        // Convert base64 to buffer and save
+        // Convert base64 to buffer
         const buffer = Buffer.from(frameData, 'base64');
-        const fullPath = path.join(detectionPath, filename);
-        await fs.promises.writeFile(fullPath, buffer);
 
-        appLogger.info('Detection frame saved', {
+        // Add event to queue (will handle S3 upload and DB save with deduplication)
+        const { eventQueue } = require('./eventQueue');
+        const added = await eventQueue.enqueue({
+          examId,
+          batchId,
+          candidateId,
+          eventType: violationType,
+          imageBuffer: buffer,
+          filename,
+          metadata: {
+            original_filename: filename,
+            uploaded_via: 'upload-frame-endpoint',
+          },
+        });
+
+        if (!added) {
+          // Event was deduplicated (same event within 5 minutes)
+          return res.json({
+            success: true,
+            message: 'Event deduplicated - same event occurred recently',
+            deduplicated: true,
+            violationType,
+            timestamp: now.toISOString(),
+          });
+        }
+
+        appLogger.info('Detection frame queued for processing', {
           violationType,
           examId,
           batchId,
           candidateId,
-          path: fullPath,
-          size: buffer.length
+          filename,
+          size: buffer.length,
         });
 
+        // Return success immediately (async processing will happen in queue)
         res.json({
           success: true,
-          message: 'Frame saved successfully',
-          path: fullPath,
+          message: 'Frame queued for upload to S3 and database save',
+          queued: true,
           violationType,
-          timestamp: now.toISOString()
+          timestamp: now.toISOString(),
         });
       } catch (error) {
-        appLogger.error('Error saving detection frame', {
+        appLogger.error('Error queuing detection frame', {
           error: error.message,
           examId,
           batchId,
