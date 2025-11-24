@@ -1,40 +1,151 @@
-# Dependency directories
+# ============================================
+# ProctorAI SFU Server - Git Ignore
+# ============================================
+# This file is at the root of proctor-ai-sfu-server/
+# All paths are relative to this directory
+# ============================================
+
+# ============================================
+# Node.js Dependencies
+# ============================================
+node_modules/
 node-application/node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+# Note: package-lock.json is kept in git to track exact dependency versions
 
+# ============================================
 # Logs
-logs
+# ============================================
+logs/
 *.log
 *.log.*
-pids
+pids/
 *.pid
 *.seed
 *.pid.lock
 
-# Runtime data
-lib-cov
-coverage
-.nyc_output
+# ============================================
+# Runtime Data
+# ============================================
+lib-cov/
+coverage/
+.nyc_output/
+*.lcov
 
-# Build / dist files
+# ============================================
+# Build / Dist Files
+# ============================================
 dist/
 build/
 tmp/
 temp/
+*.tmp
 
-# OS files
-.DS_Store
-Thumbs.db
-
-# Env files (keep secrets out of git)
+# ============================================
+# Environment Files (IMPORTANT: Keep secrets out of git)
+# ============================================
 .env
 .env.local
 .env.*.local
+.env.production
+.env.development
+.env.test
+# Keep .env.example in git as a template
 
-# VSCode / IDE
+# ============================================
+# Recording Files
+# ============================================
+# Recordings contain sensitive exam data - never commit these
+node-application/recordings/
+recordings/
+node-application/detection/
+detection/
+*.webm
+*.mp3
+*.mp4
+*.jpg
+*.jpeg
+*.png
+# Keep directory structure but ignore contents
+!recordings/.gitkeep
+!node-application/recordings/.gitkeep
+
+# ============================================
+# OS Files
+# ============================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ============================================
+# IDE / Editor Files
+# ============================================
 .vscode/
 .idea/
 *.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-project
+*.sublime-workspace
 
+# ============================================
+# MediaSoup / WebRTC
+# ============================================
+# MediaSoup worker files
+*.worker.js
+mediasoup-worker/
+
+# ============================================
+# Temporary Files
+# ============================================
+*.tmp
+*.temp
+*.bak
+*.backup
+*.old
+*.orig
+
+# ============================================
+# Test Coverage
+# ============================================
+coverage/
+.nyc_output/
+*.coverage
+htmlcov/
+.pytest_cache/
+.coverage
+
+# ============================================
+# SSL Certificates (if any)
+# ============================================
+*.pem
+*.key
+*.crt
+*.cert
+ssl/
+
+# ============================================
+# Database Files (if any)
+# ============================================
+*.db
+*.sqlite
+*.sqlite3
+database/
+
+# ============================================
+# Cache Directories
+# ============================================
+.cache/
+.npm/
+.eslintcache
+.parcel-cache/
