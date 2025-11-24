@@ -652,87 +652,12 @@ async function startRecording(producer, router, userId, appData, peer, roomId, r
         });
       } else if (peer.recordingSessions.has(videoProducer.id)) {
         // Video recording already started (video-only)
-        // Check if recording started recently (within 5 seconds) - if so, restart with audio
-        const existingSession = peer.recordingSessions.get(videoProducer.id);
-        const recordingAge = Date.now() - existingSession.createdAt.getTime();
-        const MAX_RESTART_WINDOW_MS = 5000; // 5 seconds
-        
-        if (recordingAge < MAX_RESTART_WINDOW_MS) {
-          // Recording started recently - restart with combined video+audio
-          socketLogger.info('Restarting video recording to include audio', {
-            videoProducerId: videoProducer.id,
-            audioProducerId: producer.id,
-            recordingAge: recordingAge,
-            userId
-          });
-          
-          // Stop existing video-only recording
-          await existingSession.cleanup();
-          peer.recordingSessions.delete(videoProducer.id);
-          
-          // Create new combined recording
-          const now = new Date();
-          const year = now.getFullYear();
-          const month = String(now.getMonth() + 1).padStart(2, '0');
-          const day = String(now.getDate()).padStart(2, '0');
-          const hours = String(now.getHours()).padStart(2, '0');
-          const minutes = String(now.getMinutes()).padStart(2, '0');
-          const seconds = String(now.getSeconds()).padStart(2, '0');
-          const dateStr = `${year}_${month}_${day}_${hours}_${minutes}_${seconds}`;
-          const filename = `webcam_recording_${dateStr}.webm`;
-          
-          // Build path: recordings/webcam/exam_id/batch_id/candidate_id/filename
-          let recordingPath = path.join(config.recording.basePath, 'webcam');
-          
-          if (examId) {
-            recordingPath = path.join(recordingPath, examId);
-          }
-          if (batchId) {
-            recordingPath = path.join(recordingPath, batchId);
-          }
-          if (candidateId) {
-            recordingPath = path.join(recordingPath, candidateId);
-          }
-          
-          // Ensure directory exists
-          await fs.mkdir(recordingPath, { recursive: true });
-          
-          const fullPath = path.join(recordingPath, filename);
-          const session = await createCombinedWebcamRecording(
-            videoProducer,
-            producer,
-            router,
-            fullPath,
-            examId,
-            batchId,
-            candidateId
-          );
-          
-          // Store session for both producers
-          peer.recordingSessions.set(videoProducer.id, session);
-          peer.recordingSessions.set(producer.id, session);
-          
-          socketLogger.recording('started', { 
-            type: 'webcam',
-            kind: 'combined',
-            userId,
-            candidateId,
-            examId,
-            batchId,
-            videoProducerId: videoProducer.id,
-            audioProducerId: producer.id,
-            path: fullPath,
-            restarted: true
-          });
-        } else {
-          // Recording started too long ago - don't restart, audio will not be included
-          socketLogger.info('Video recording already active for too long, audio not combined', {
-            videoProducerId: videoProducer.id,
-            audioProducerId: producer.id,
-            recordingAge: recordingAge,
-            userId
-          });
-        }
+        // Don't modify existing recording, audio will not be included
+        socketLogger.info('Video recording already active, audio not combined', {
+          videoProducerId: videoProducer.id,
+          audioProducerId: producer.id,
+          userId
+        });
       } else {
         // Video exists but not recorded yet - should not happen as video records immediately
         // But if it does, create combined recording
