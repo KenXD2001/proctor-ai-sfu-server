@@ -175,14 +175,8 @@ class RecordingSession {
       }
       if (this.sdpFiles && this.sdpFiles.length > 0) {
         for (const sdpFile of this.sdpFiles) {
-          try {
-            if (sdpFile && fsSync.existsSync(sdpFile)) {
-              await fs.unlink(sdpFile);
-            }
-          } catch (error) {
-            // Ignore errors when deleting SDP files (they might already be deleted)
-            recordLogger.debug('SDP file already deleted or not found', { sdpFile, error: error.message });
-          }
+          if (sdpFile && fsSync.existsSync(sdpFile)) {
+            await fs.unlink(sdpFile);
           }
         }
         recordLogger.info('SDP files cleaned up', { producerId: this.producerId, count: this.sdpFiles.length });
@@ -741,8 +735,6 @@ function generateCombinedFFmpegArgs(videoSdpFile, audioSdpFile, output) {
     "-c:a", "copy",
     "-map", "0:v:0",
     "-map", "1:a:0",
-    "-f", "webm", // Explicitly specify WebM output format
-    "-flags", "+global_header", // Required for WebM streaming
     output,
   ];
 }
@@ -838,87 +830,28 @@ async function createCombinedWebcamRecording(videoProducer, audioProducer, route
     });
 
     // Start FFmpeg process
-    recordLogger.info('Starting combined FFmpeg recording process', {
-      videoProducerId: videoProducer.id,
-      audioProducerId: audioProducer.id,
-      ffmpegPath: FFMPEG_PATH,
-      outputPath,
-      videoFFmpegPort,
-      audioFFmpegPort,
-      recorderIp: config.recording.recorderIp
-    });
-    
     await startFFmpegRecording(session, args);
 
     // Wait for initialization
     await new Promise(resolve => setTimeout(resolve, config.timeouts.ffmpegInit));
 
     // Connect transports to FFmpeg
-    recordLogger.info('Connecting video transport to FFmpeg', {
-      videoProducerId: videoProducer.id,
-      ip: config.recording.recorderIp,
-      port: videoFFmpegPort,
-      transportId: videoTransport.id
-    });
-    
     await videoTransport.connect({
       ip: config.recording.recorderIp,
       port: videoFFmpegPort
     });
-    
-    recordLogger.info('Video transport connected to FFmpeg', {
-      videoProducerId: videoProducer.id,
-      transportId: videoTransport.id
-    });
 
-    recordLogger.info('Connecting audio transport to FFmpeg', {
-      audioProducerId: audioProducer.id,
-      ip: config.recording.recorderIp,
-      port: audioFFmpegPort,
-      transportId: audioTransport.id
-    });
-    
     await audioTransport.connect({
       ip: config.recording.recorderIp,
       port: audioFFmpegPort
-    });
-    
-    recordLogger.info('Audio transport connected to FFmpeg', {
-      audioProducerId: audioProducer.id,
-      transportId: audioTransport.id
     });
 
     // Wait for connection to stabilize
     await new Promise(resolve => setTimeout(resolve, config.timeouts.transportStabilize));
 
     // Resume consumers to start data flow
-    recordLogger.info('Resuming video consumer to start data flow', {
-      videoProducerId: videoProducer.id,
-      consumerId: videoConsumer.id,
-      paused: videoConsumer.paused
-    });
-    
     await videoConsumer.resume();
-    
-    recordLogger.info('Video consumer resumed, data flow should start', {
-      videoProducerId: videoProducer.id,
-      consumerId: videoConsumer.id,
-      paused: videoConsumer.paused
-    });
-
-    recordLogger.info('Resuming audio consumer to start data flow', {
-      audioProducerId: audioProducer.id,
-      consumerId: audioConsumer.id,
-      paused: audioConsumer.paused
-    });
-    
     await audioConsumer.resume();
-    
-    recordLogger.info('Audio consumer resumed, data flow should start', {
-      audioProducerId: audioProducer.id,
-      consumerId: audioConsumer.id,
-      paused: audioConsumer.paused
-    });
     
     recordLogger.recording('active', {
       producerId: videoProducer.id,
