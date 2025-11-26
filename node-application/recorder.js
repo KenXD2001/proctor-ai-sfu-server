@@ -18,23 +18,41 @@ const recordLogger = createLogger('Recorder');
 
 /**
  * Find FFmpeg executable in common locations
- * Handles snap-installed FFmpeg and standard system installations
+ * Handles snap-installed FFmpeg, standard system installations, and Windows paths
  */
 function findFFmpegPath() {
-  // Common FFmpeg locations (order matters - check snap first)
-  const possiblePaths = [
+  const isWindows = process.platform === 'win32';
+  const executableName = isWindows ? 'ffmpeg.exe' : 'ffmpeg';
+  
+  // Common FFmpeg locations (platform-specific)
+  let possiblePaths = [];
+  
+  if (isWindows) {
+    // Windows paths
+    possiblePaths = [
+      'C:\\ffmpeg\\bin\\ffmpeg.exe',  // Common Windows installation
+      'C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe',
+      'C:\\Program Files (x86)\\ffmpeg\\bin\\ffmpeg.exe',
+      path.join(process.cwd(), 'ffmpeg', 'bin', 'ffmpeg.exe'), // Relative to project
+    ];
+  } else {
+    // Unix/Linux paths
+    possiblePaths = [
     '/snap/bin/ffmpeg',           // Snap installation (most common on servers)
     '/usr/bin/ffmpeg',            // Standard system installation
     '/usr/local/bin/ffmpeg',      // Local installation
   ];
+  }
 
   // Check if file exists and is executable
   for (const ffmpegPath of possiblePaths) {
     try {
       if (fsSync.existsSync(ffmpegPath)) {
-        // Check if executable
+        // On Unix, check if executable; on Windows, just check if file exists
+        if (!isWindows) {
         fsSync.accessSync(ffmpegPath, fsSync.constants.X_OK);
-        recordLogger.info('FFmpeg found', { path: ffmpegPath });
+        }
+        recordLogger.info('FFmpeg found', { path: ffmpegPath, platform: process.platform });
         return ffmpegPath;
       }
     } catch (e) {
@@ -45,20 +63,24 @@ function findFFmpegPath() {
 
   // Try PATH-based lookup as fallback
   try {
-    const whichResult = execSync('which ffmpeg', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    if (whichResult) {
-      recordLogger.info('FFmpeg found via PATH', { path: whichResult });
-      return whichResult;
+    const pathCommand = isWindows ? 'where ffmpeg' : 'which ffmpeg';
+    const pathResult = execSync(pathCommand, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    if (pathResult) {
+      // On Windows, 'where' may return multiple paths, take the first one
+      const resultPath = isWindows ? pathResult.split('\n')[0].trim() : pathResult;
+      recordLogger.info('FFmpeg found via PATH', { path: resultPath, platform: process.platform });
+      return resultPath;
     }
   } catch (e) {
-    // which command failed or ffmpeg not in PATH
+    // PATH lookup command failed or ffmpeg not in PATH
   }
 
   // If nothing found, log warning and return 'ffmpeg' as fallback
   recordLogger.warn('FFmpeg not found in common locations, using "ffmpeg" (will rely on PATH)', {
-    checkedPaths: possiblePaths
+    checkedPaths: possiblePaths,
+    platform: process.platform
   });
-  return 'ffmpeg';
+  return executableName;
 }
 
 // Cache FFmpeg path on module load
@@ -375,11 +397,22 @@ async function startFFmpegRecording(session, args) {
   return new Promise((resolve, reject) => {
     try {
       // Use the found FFmpeg path
+      const isWindows = process.platform === 'win32';
+      let pathAddition = '';
+      
+      if (isWindows) {
+        // Add Windows FFmpeg path
+        pathAddition = ';C:\\ffmpeg\\bin';
+      } else {
+        // Add Linux paths: /usr/bin (server) and /snap/bin (snap installations)
+        pathAddition = ':/usr/bin:/snap/bin';
+      }
+      
       session.ffmpeg = spawn(FFMPEG_PATH, args, {
         env: {
           ...process.env,
-          // Ensure PATH includes snap/bin for any subprocesses
-          PATH: process.env.PATH + ':/snap/bin'
+          // Ensure PATH includes FFmpeg bin directories for any subprocesses
+          PATH: process.env.PATH + pathAddition
         }
       });
       session.status = 'recording';
