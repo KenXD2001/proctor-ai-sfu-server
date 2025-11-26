@@ -197,6 +197,104 @@ class ProctorAIServer {
       }
     }));
 
+    // Detection audio upload endpoint
+    this.app.post('/api/detection/upload-audio', asyncHandler(async (req, res) => {
+      const { examId, batchId, candidateId, violationType, audioData, mimeType } = req.body;
+
+      if (!examId || !batchId || !candidateId || !violationType || !audioData) {
+        return res.status(400).json({
+          error: 'Missing required fields: examId, batchId, candidateId, violationType, audioData'
+        });
+      }
+
+      try {
+        // Generate filename with date format: noise_detected_2025_11_17_12_23_50.webm
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        const seconds = String(now.getSeconds()).padStart(2, '0');
+        const dateStr = `${year}_${month}_${day}_${hours}_${minutes}_${seconds}`;
+        
+        // Determine file extension based on mimeType
+        let extension = 'webm';
+        if (mimeType) {
+          if (mimeType.includes('webm')) {
+            extension = 'webm';
+          } else if (mimeType.includes('mp4')) {
+            extension = 'mp4';
+          } else if (mimeType.includes('wav')) {
+            extension = 'wav';
+          } else if (mimeType.includes('ogg')) {
+            extension = 'ogg';
+          }
+        }
+        
+        const filename = `${violationType}_detected_${dateStr}.${extension}`;
+
+        // Convert base64 to buffer
+        const buffer = Buffer.from(audioData, 'base64');
+
+        // Add event to queue (will handle S3 upload and DB save with deduplication)
+        const { eventQueue } = require('./eventQueue');
+        const added = await eventQueue.enqueue({
+          examId,
+          batchId,
+          candidateId,
+          eventType: violationType,
+          audioBuffer: buffer,
+          filename,
+          mimeType: mimeType || 'audio/webm',
+          metadata: {
+            original_filename: filename,
+            uploaded_via: 'upload-audio-endpoint',
+            mime_type: mimeType || 'audio/webm',
+          },
+        });
+
+        if (!added) {
+          // Event was deduplicated (same event within 5 minutes)
+          return res.json({
+            success: true,
+            message: 'Event deduplicated - same event occurred recently',
+            deduplicated: true,
+            violationType,
+            timestamp: now.toISOString(),
+          });
+        }
+
+        appLogger.info('Detection audio queued for processing', {
+          violationType,
+          examId,
+          batchId,
+          candidateId,
+          filename,
+          size: buffer.length,
+          mimeType: mimeType || 'audio/webm',
+        });
+
+        // Return success immediately (async processing will happen in queue)
+        res.json({
+          success: true,
+          message: 'Audio queued for upload to S3 and database save',
+          queued: true,
+          violationType,
+          timestamp: now.toISOString(),
+        });
+      } catch (error) {
+        appLogger.error('Error queuing detection audio', {
+          error: error.message,
+          examId,
+          batchId,
+          candidateId,
+          violationType
+        });
+        throw error;
+      }
+    }));
+
     // 404 handler - catch all unmatched routes
     this.app.use((req, res) => {
       res.status(404).json({

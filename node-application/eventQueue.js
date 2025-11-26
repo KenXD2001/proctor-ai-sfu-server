@@ -10,6 +10,7 @@
 
 const { logger, createLogger } = require('./utils/logger');
 const { uploadDetectionImageToS3 } = require('./imageUploadService');
+const { uploadDetectionAudioToS3 } = require('./audioUploadService');
 
 const queueLogger = createLogger('EventQueue');
 
@@ -60,9 +61,11 @@ class EventQueue {
    * @param {string} event.examId - Exam ID
    * @param {string} event.batchId - Batch ID
    * @param {string} event.candidateId - Candidate ID
-   * @param {string} event.eventType - Event type (e.g., 'face_mismatch', 'fullscreen_exit')
+   * @param {string} event.eventType - Event type (e.g., 'face_mismatch', 'fullscreen_exit', 'noise', 'speech')
    * @param {Buffer} event.imageBuffer - Image data as buffer (optional)
-   * @param {string} event.filename - Filename for image (optional)
+   * @param {Buffer} event.audioBuffer - Audio data as buffer (optional)
+   * @param {string} event.filename - Filename for image/audio (optional)
+   * @param {string} event.mimeType - MIME type for audio (optional, e.g., 'audio/webm')
    * @param {Object} event.metadata - Additional metadata (optional)
    * @returns {Promise<boolean>} - Returns true if added to queue, false if deduplicated
    */
@@ -128,6 +131,7 @@ class EventQueue {
       candidateId,
       queueSize: this.queue.length,
       hasImage: !!event.imageBuffer,
+      hasAudio: !!event.audioBuffer,
     });
 
     return true; // Event added to queue
@@ -169,10 +173,11 @@ class EventQueue {
   /**
    * Process a single event
    * 1. Upload image to S3 (if image exists)
-   * 2. Save flag session to backend DB
+   * 2. Upload audio to S3 (if audio exists)
+   * 3. Save flag session to backend DB
    */
   async processEvent(event) {
-    const { examId, batchId, candidateId, eventType, imageBuffer, filename, metadata = {} } = event;
+    const { examId, batchId, candidateId, eventType, imageBuffer, audioBuffer, filename, mimeType, metadata = {} } = event;
 
     queueLogger.info('Processing event', {
       eventId: event.id,
@@ -181,10 +186,13 @@ class EventQueue {
       batchId,
       candidateId,
       hasImage: !!imageBuffer,
+      hasAudio: !!audioBuffer,
     });
 
     let imageUrl = null;
     let imageObjectKey = null;
+    let audioUrl = null;
+    let audioObjectKey = null;
 
     // Step 1: Upload image to S3 if image buffer exists
     if (imageBuffer && Buffer.isBuffer(imageBuffer)) {
@@ -217,7 +225,40 @@ class EventQueue {
       }
     }
 
-    // Step 2: Save flag session to backend DB
+    // Step 2: Upload audio to S3 if audio buffer exists
+    if (audioBuffer && Buffer.isBuffer(audioBuffer)) {
+      try {
+        const uploadResult = await uploadDetectionAudioToS3(
+          audioBuffer,
+          examId,
+          batchId,
+          candidateId,
+          eventType,
+          filename,
+          mimeType
+        );
+
+        audioUrl = uploadResult.url;
+        audioObjectKey = uploadResult.objectKey;
+
+        queueLogger.info('Audio uploaded to S3', {
+          eventId: event.id,
+          audioUrl,
+          audioObjectKey,
+          fileSize: uploadResult.fileSize,
+          contentType: uploadResult.contentType,
+        });
+      } catch (error) {
+        queueLogger.error('Failed to upload audio to S3', {
+          eventId: event.id,
+          error: error.message,
+          eventType,
+        });
+        // Continue processing even if audio upload fails
+      }
+    }
+
+    // Step 3: Save flag session to backend DB
     try {
       await this.saveFlagSessionToBackend({
         examId,
@@ -226,6 +267,8 @@ class EventQueue {
         eventType,
         imageUrl,
         imageObjectKey,
+        audioUrl,
+        audioObjectKey,
         metadata,
       });
 
@@ -236,6 +279,7 @@ class EventQueue {
         batchId,
         candidateId,
         imageUrl,
+        audioUrl,
       });
     } catch (error) {
       queueLogger.error('Failed to save flag session to backend', {
@@ -253,7 +297,7 @@ class EventQueue {
   /**
    * Save flag session to backend API
    */
-  async saveFlagSessionToBackend({ examId, batchId, candidateId, eventType, imageUrl, imageObjectKey, metadata }) {
+  async saveFlagSessionToBackend({ examId, batchId, candidateId, eventType, imageUrl, imageObjectKey, audioUrl, audioObjectKey, metadata }) {
     // Map violation types to backend event types (handles both camelCase and snake_case)
     const eventTypeMapping = {
       // Snake case mappings
@@ -267,6 +311,8 @@ class EventQueue {
       'looking_away': 'looking_away',
       'head_turns': 'head_turns',
       'frequent_head_turns': 'frequent_head_turns',
+      'noise': 'noise_detected',
+      'speech': 'speech_detected',
       // Camel case mappings (from frontend)
       'faceMismatch': 'face_mismatch',
       'faceMissing': 'face_missing',
@@ -287,10 +333,12 @@ class EventQueue {
       event_type: mappedEventType,
       severity: metadata.severity || 'medium',
       message: metadata.message || `${mappedEventType.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())} detected during exam session`,
-      screenshot_url: imageUrl || null, // Store S3 URL
+      screenshot_url: imageUrl || null, // Store S3 URL for image
       ai_analysis_data: JSON.stringify({
         ...metadata,
         image_object_key: imageObjectKey || null,
+        audio_url: audioUrl || null, // Store S3 URL for audio
+        audio_object_key: audioObjectKey || null,
         detection_method: 'frontend_monitoring',
         timestamp: new Date().toISOString(),
         original_event_type: eventType,
