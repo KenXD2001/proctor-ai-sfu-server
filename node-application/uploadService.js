@@ -32,7 +32,7 @@ const DO_SPACE = process.env.DO_SPACE || process.env.S3_BUCKET_NAME || 'aiprocto
 const DO_ENDPOINT = process.env.DO_ENDPOINT || `https://${DO_REGION}.digitaloceanspaces.com`;
 const DO_ACCESS_KEY = process.env.DO_ACCESS_KEY;
 const DO_SECRET_KEY = process.env.DO_SECRET_KEY;
-const BACKEND_API_URL = process.env.BACKEND_API_URL || 'http://localhost:8000';
+const BACKEND_API_URL = process.env.BACKEND_API_URL;
 
 // Initialize S3 client
 let s3 = null;

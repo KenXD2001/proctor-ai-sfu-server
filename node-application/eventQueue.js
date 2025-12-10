@@ -37,7 +37,7 @@ try {
   fetch = require('node-fetch');
 }
 
-const BACKEND_API_URL = process.env.BACKEND_API_URL || 'http://localhost:8000';
+const BACKEND_API_URL = process.env.BACKEND_API_URL;
 
 /**
  * Event Queue Class
