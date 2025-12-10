@@ -8,6 +8,8 @@
  * - Prevents integrity score from decreasing too rapidly
  */
 
+const fs = require('fs').promises;
+const path = require('path');
 const { logger, createLogger } = require('./utils/logger');
 const { uploadDetectionImageToS3 } = require('./imageUploadService');
 const { uploadDetectionAudioToS3 } = require('./audioUploadService');
@@ -15,9 +17,12 @@ const { uploadDetectionAudioToS3 } = require('./audioUploadService');
 const queueLogger = createLogger('EventQueue');
 
 // Queue configuration
-const DEDUPLICATION_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+const DEDUPLICATION_WINDOW_MS = 0; // disabled per current requirements
 const MAX_QUEUE_SIZE = 1000;
 const PROCESS_INTERVAL_MS = 5000; // Process queue every 5 seconds
+const MAX_PARALLEL_UPLOADS = 4; // safe parallelism (2–4 recommended)
+const MAX_UPLOAD_ATTEMPTS = 3;
+const BASE_RETRY_DELAY_MS = 500;
 
 // Use node-fetch for HTTP requests
 let fetch;
@@ -81,39 +86,11 @@ class EventQueue {
       this.queue.shift();
     }
 
-    // Create deduplication key: sessionId_eventType
-    // Since we don't have sessionId directly, use examId_batchId_candidateId as session identifier
     const sessionKey = `${examId}_${batchId}_${candidateId}`;
     const dedupKey = `${sessionKey}_${eventType}`;
     const now = Date.now();
 
-    // Check if same event occurred recently (within 5 minutes)
-    const lastEventTime = this.lastEventTimes.get(dedupKey);
-    if (lastEventTime && (now - lastEventTime) < DEDUPLICATION_WINDOW_MS) {
-      const remainingMs = DEDUPLICATION_WINDOW_MS - (now - lastEventTime);
-      queueLogger.info('Event deduplicated - same event within 5 minutes', {
-        eventType,
-        examId,
-        batchId,
-        candidateId,
-        lastEventTime: new Date(lastEventTime).toISOString(),
-        remainingMs,
-        remainingMinutes: Math.round(remainingMs / 1000 / 60 * 10) / 10,
-      });
-      return false; // Event deduplicated, not added to queue
-    }
-
-    // Update last event time
-    this.lastEventTimes.set(dedupKey, now);
-
-    // Clean up old entries from lastEventTimes (keep only last 1000 entries)
-    if (this.lastEventTimes.size > 1000) {
-      const entries = Array.from(this.lastEventTimes.entries());
-      // Keep only entries from last hour
-      const oneHourAgo = now - (60 * 60 * 1000);
-      const recentEntries = entries.filter(([key, time]) => time > oneHourAgo);
-      this.lastEventTimes = new Map(recentEntries);
-    }
+    // Deduplication disabled (window = 0)
 
     // Add event to queue with timestamp
     const queueEvent = {
@@ -149,21 +126,24 @@ class EventQueue {
 
     try {
       while (this.queue.length > 0) {
-        const event = this.queue.shift();
+        const batch = this.queue.splice(0, MAX_PARALLEL_UPLOADS);
+        const results = await Promise.allSettled(
+          batch.map((event) => this.processEvent(event))
+        );
 
-        try {
-          await this.processEvent(event);
-        } catch (error) {
-          queueLogger.error('Error processing event', {
-            error: error.message,
-            eventId: event.id,
-            eventType: event.eventType,
-            examId: event.examId,
-            batchId: event.batchId,
-            candidateId: event.candidateId,
-          });
-          // Continue processing other events even if one fails
-        }
+        results.forEach((result, idx) => {
+          const event = batch[idx];
+          if (result.status === 'rejected') {
+            queueLogger.error('Error processing event', {
+              error: result.reason?.message || String(result.reason),
+              eventId: event.id,
+              eventType: event.eventType,
+              examId: event.examId,
+              batchId: event.batchId,
+              candidateId: event.candidateId,
+            });
+          }
+        });
       }
     } finally {
       this.processing = false;
@@ -177,7 +157,19 @@ class EventQueue {
    * 3. Save flag session to backend DB
    */
   async processEvent(event) {
-    const { examId, batchId, candidateId, eventType, imageBuffer, audioBuffer, filename, mimeType, metadata = {} } = event;
+    const {
+      examId,
+      batchId,
+      candidateId,
+      eventType,
+      filePath, // staging file path (image or audio)
+      kind, // 'image' | 'audio'
+      imageBuffer,
+      audioBuffer,
+      filename,
+      mimeType,
+      metadata = {},
+    } = event;
 
     queueLogger.info('Processing event', {
       eventId: event.id,
@@ -185,8 +177,10 @@ class EventQueue {
       examId,
       batchId,
       candidateId,
+      kind,
       hasImage: !!imageBuffer,
       hasAudio: !!audioBuffer,
+      hasFilePath: !!filePath,
     });
 
     let imageUrl = null;
@@ -194,67 +188,117 @@ class EventQueue {
     let audioUrl = null;
     let audioObjectKey = null;
 
-    // Step 1: Upload image to S3 if image buffer exists
-    if (imageBuffer && Buffer.isBuffer(imageBuffer)) {
+    const withRetry = async (fn, desc) => {
+      let attempt = 0;
+      let lastError;
+      while (attempt < MAX_UPLOAD_ATTEMPTS) {
+        try {
+          return await fn();
+        } catch (err) {
+          lastError = err;
+          attempt += 1;
+          if (attempt >= MAX_UPLOAD_ATTEMPTS) {
+            throw err;
+          }
+          const delay = BASE_RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+          queueLogger.warn(`Retrying ${desc} (attempt ${attempt}/${MAX_UPLOAD_ATTEMPTS})`, {
+            delayMs: delay,
+            error: err.message,
+          });
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+      throw lastError;
+    };
+
+    const resolveBufferFromFile = async () => {
+      if (!filePath) return null;
       try {
-        const uploadResult = await uploadDetectionImageToS3(
-          imageBuffer,
-          examId,
-          batchId,
-          candidateId,
-          eventType,
-          filename
-        );
-
-        imageUrl = uploadResult.url;
-        imageObjectKey = uploadResult.objectKey;
-
-        queueLogger.info('Image uploaded to S3', {
-          eventId: event.id,
-          imageUrl,
-          imageObjectKey,
-          fileSize: uploadResult.fileSize,
+        return await fs.readFile(filePath);
+      } catch (err) {
+        queueLogger.error('Failed to read staged file', {
+          filePath,
+          error: err.message,
         });
-      } catch (error) {
-        queueLogger.error('Failed to upload image to S3', {
-          eventId: event.id,
-          error: error.message,
-          eventType,
-        });
-        // Continue processing even if image upload fails
+        throw err;
+      }
+    };
+
+    const effectiveFilename = filename || (filePath ? path.basename(filePath) : undefined);
+
+    // Step 1: Upload image (if applicable)
+    if (kind === 'image' || imageBuffer) {
+      const buffer = imageBuffer || (await resolveBufferFromFile());
+      if (buffer && Buffer.isBuffer(buffer)) {
+        try {
+          const uploadResult = await withRetry(
+            () =>
+              uploadDetectionImageToS3(
+                buffer,
+                examId,
+                batchId,
+                candidateId,
+                eventType,
+                effectiveFilename
+              ),
+            'image upload'
+          );
+
+          imageUrl = uploadResult.url;
+          imageObjectKey = uploadResult.objectKey;
+
+          queueLogger.info('Image uploaded to S3', {
+            eventId: event.id,
+            imageUrl,
+            imageObjectKey,
+            fileSize: uploadResult.fileSize,
+          });
+        } catch (error) {
+          queueLogger.error('Failed to upload image to S3', {
+            eventId: event.id,
+            error: error.message,
+            eventType,
+          });
+        }
       }
     }
 
-    // Step 2: Upload audio to S3 if audio buffer exists
-    if (audioBuffer && Buffer.isBuffer(audioBuffer)) {
-      try {
-        const uploadResult = await uploadDetectionAudioToS3(
-          audioBuffer,
-          examId,
-          batchId,
-          candidateId,
-          eventType,
-          filename,
-          mimeType
-        );
+    // Step 2: Upload audio (if applicable)
+    if (kind === 'audio' || audioBuffer) {
+      const buffer = audioBuffer || (await resolveBufferFromFile());
+      if (buffer && Buffer.isBuffer(buffer)) {
+        try {
+          const uploadResult = await withRetry(
+            () =>
+              uploadDetectionAudioToS3(
+                buffer,
+                examId,
+                batchId,
+                candidateId,
+                eventType,
+                effectiveFilename,
+                mimeType
+              ),
+            'audio upload'
+          );
 
-        audioUrl = uploadResult.url;
-        audioObjectKey = uploadResult.objectKey;
+          audioUrl = uploadResult.url;
+          audioObjectKey = uploadResult.objectKey;
 
-        queueLogger.info('Audio uploaded to S3', {
-          eventId: event.id,
-          audioUrl,
-          audioObjectKey,
-          fileSize: uploadResult.fileSize,
-          contentType: uploadResult.contentType,
-        });
-      } catch (error) {
-        queueLogger.error('Failed to upload audio to S3', {
-          eventId: event.id,
-          error: error.message,
-          eventType,
-        });
-        // Continue processing even if audio upload fails
+          queueLogger.info('Audio uploaded to S3', {
+            eventId: event.id,
+            audioUrl,
+            audioObjectKey,
+            fileSize: uploadResult.fileSize,
+            contentType: uploadResult.contentType,
+          });
+        } catch (error) {
+          queueLogger.error('Failed to upload audio to S3', {
+            eventId: event.id,
+            error: error.message,
+            eventType,
+          });
+        }
       }
     }
 
@@ -291,6 +335,18 @@ class EventQueue {
         candidateId,
       });
       throw error; // Re-throw so queue can retry if needed
+    } finally {
+      if (filePath) {
+        try {
+          await fs.unlink(filePath);
+          queueLogger.info('Staged file removed after processing', { filePath });
+        } catch (err) {
+          queueLogger.warn('Failed to remove staged file', {
+            filePath,
+            error: err.message,
+          });
+        }
+      }
     }
   }
 

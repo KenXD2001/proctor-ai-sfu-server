@@ -7,6 +7,7 @@
 // Look for .env in parent directory (proctor-ai-sfu-server/.env) or current directory
 const path = require('path');
 const fs = require('fs');
+const fsp = fs.promises;
 const envPath = path.join(__dirname, '..', '.env');
 if (fs.existsSync(envPath)) {
   require('dotenv').config({ path: envPath });
@@ -23,6 +24,8 @@ const { logger, createLogger } = require('./utils/logger');
 const { asyncHandler } = require('./utils/errors');
 const { startSocketServer } = require("./socketServer");
 const { mediaSoupManager } = require('./mediasoupServer');
+
+const STAGING_BASE = process.env.STAGING_DIR || path.join(__dirname, '..', 'staging');
 
 const appLogger = createLogger('App');
 
@@ -117,7 +120,7 @@ class ProctorAIServer {
       });
     }));
 
-    // Detection frame upload endpoint - Uses queue system with S3 upload
+    // Detection frame upload endpoint - stage to disk then queue upload
     this.app.post('/api/detection/upload-frame', asyncHandler(async (req, res) => {
       const { examId, batchId, candidateId, violationType, frameData } = req.body;
 
@@ -139,34 +142,37 @@ class ProctorAIServer {
         const dateStr = `${year}_${month}_${day}_${hours}_${minutes}_${seconds}`;
         const filename = `${violationType}_${dateStr}.webp`;
 
-        // Convert base64 to buffer
+        // Convert base64 to buffer and stage to disk
         const buffer = Buffer.from(frameData, 'base64');
+        const stagingPath = path.join(
+          STAGING_BASE,
+          'PROCTOR_AI',
+          examId,
+          batchId,
+          candidateId,
+          'detection',
+          'webcam',
+          violationType
+        );
+        await fsp.mkdir(stagingPath, { recursive: true });
+        const filePath = path.join(stagingPath, filename);
+        await fsp.writeFile(filePath, buffer);
 
-        // Add event to queue (will handle S3 upload and DB save with deduplication)
+        // Add event to queue (will handle S3 upload and DB save)
         const { eventQueue } = require('./eventQueue');
-        const added = await eventQueue.enqueue({
+        await eventQueue.enqueue({
           examId,
           batchId,
           candidateId,
           eventType: violationType,
-          imageBuffer: buffer,
+          kind: 'image',
+          filePath,
           filename,
           metadata: {
             original_filename: filename,
             uploaded_via: 'upload-frame-endpoint',
           },
         });
-
-        if (!added) {
-          // Event was deduplicated (same event within 5 minutes)
-          return res.json({
-            success: true,
-            message: 'Event deduplicated - same event occurred recently',
-            deduplicated: true,
-            violationType,
-            timestamp: now.toISOString(),
-          });
-        }
 
         appLogger.info('Detection frame queued for processing', {
           violationType,
@@ -175,6 +181,7 @@ class ProctorAIServer {
           candidateId,
           filename,
           size: buffer.length,
+          staged_path: filePath,
         });
 
         // Return success immediately (async processing will happen in queue)
@@ -197,7 +204,7 @@ class ProctorAIServer {
       }
     }));
 
-    // Detection audio upload endpoint
+    // Detection audio upload endpoint - stage to disk then queue upload
     this.app.post('/api/detection/upload-audio', asyncHandler(async (req, res) => {
       const { examId, batchId, candidateId, violationType, audioData, mimeType } = req.body;
 
@@ -234,17 +241,31 @@ class ProctorAIServer {
         
         const filename = `${violationType}_detected_${dateStr}.${extension}`;
 
-        // Convert base64 to buffer
+        // Convert base64 to buffer and stage to disk
         const buffer = Buffer.from(audioData, 'base64');
+        const stagingPath = path.join(
+          STAGING_BASE,
+          'PROCTOR_AI',
+          examId,
+          batchId,
+          candidateId,
+          'detection',
+          'noise',
+          violationType
+        );
+        await fsp.mkdir(stagingPath, { recursive: true });
+        const filePath = path.join(stagingPath, filename);
+        await fsp.writeFile(filePath, buffer);
 
-        // Add event to queue (will handle S3 upload and DB save with deduplication)
+        // Add event to queue (will handle S3 upload and DB save)
         const { eventQueue } = require('./eventQueue');
-        const added = await eventQueue.enqueue({
+        await eventQueue.enqueue({
           examId,
           batchId,
           candidateId,
           eventType: violationType,
-          audioBuffer: buffer,
+          kind: 'audio',
+          filePath,
           filename,
           mimeType: mimeType || 'audio/webm',
           metadata: {
@@ -254,17 +275,6 @@ class ProctorAIServer {
           },
         });
 
-        if (!added) {
-          // Event was deduplicated (same event within 5 minutes)
-          return res.json({
-            success: true,
-            message: 'Event deduplicated - same event occurred recently',
-            deduplicated: true,
-            violationType,
-            timestamp: now.toISOString(),
-          });
-        }
-
         appLogger.info('Detection audio queued for processing', {
           violationType,
           examId,
@@ -273,6 +283,7 @@ class ProctorAIServer {
           filename,
           size: buffer.length,
           mimeType: mimeType || 'audio/webm',
+          staged_path: filePath,
         });
 
         // Return success immediately (async processing will happen in queue)

@@ -101,8 +101,24 @@ async function uploadToS3(filePath, examId, batchId, candidateId, recordingType,
   // Get names from API
   const names = await getNamesFromAPI(examId, batchId, candidateId);
 
-  // Build S3 object key: exam_name/batch_name/student_name/recording_type/filename
-  const objectKey = `recordings/${names.examName}/${names.batchName}/${names.studentName}/${recordingType}/${filename}`;
+  // Build S3 object key (new convention):
+  // PROCTOR_AI/{examId}/{batchId}/{candidateId}/{recording_type}/{filename}
+  // recording_type ∈ {screen_recordings, webcam_recordings}
+  const sanitizedExamId = sanitizeFilename(examId || 'unknown');
+  const sanitizedBatchId = sanitizeFilename(batchId || 'default');
+  const sanitizedCandidateId = sanitizeFilename(candidateId || 'unknown');
+
+  // Map recording types to new folder names
+  let recordingFolder = 'unknown';
+  if (recordingType === 'screen') {
+    recordingFolder = 'screen_recordings';
+  } else if (recordingType === 'webcam') {
+    recordingFolder = 'webcam_recordings';
+  } else {
+    recordingFolder = sanitizeFilename(recordingType || 'unknown');
+  }
+
+  const objectKey = `PROCTOR_AI/${sanitizedExamId}/${sanitizedBatchId}/${sanitizedCandidateId}/${recordingFolder}/${filename}`;
 
   uploadLogger.info('Uploading recording to S3', {
     filePath,

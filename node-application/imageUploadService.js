@@ -79,15 +79,15 @@ async function uploadDetectionImageToS3(imageBuffer, examId, batchId, candidateI
     filename = `${eventType}_${dateStr}.webp`;
   }
 
-  // Build S3 object key: detection/{examId}/{batchId}/{candidateId}/{eventType}/{filename}
-  // Use IDs for now - we can update paths later if needed
+  // Build S3 object key (new convention):
+  // PROCTOR_AI/{examId}/{batchId}/{candidateId}/detection/webcam/{eventType}/{filename}
   const sanitizedExamId = sanitizeFilename(examId || 'unknown');
   const sanitizedBatchId = sanitizeFilename(batchId || 'default');
   const sanitizedCandidateId = sanitizeFilename(candidateId || 'unknown');
   const sanitizedEventType = sanitizeFilename(eventType || 'unknown');
   const sanitizedFilename = sanitizeFilename(filename);
 
-  const objectKey = `detection/${sanitizedExamId}/${sanitizedBatchId}/${sanitizedCandidateId}/${sanitizedEventType}/${sanitizedFilename}`;
+  const objectKey = `PROCTOR_AI/${sanitizedExamId}/${sanitizedBatchId}/${sanitizedCandidateId}/detection/webcam/${sanitizedEventType}/${sanitizedFilename}`;
 
   // Determine content type based on filename extension
   let contentType = 'image/webp'; // default
